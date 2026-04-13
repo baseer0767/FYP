@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+numpy
+opencv-python
+mediapipe==0.10.14
+tensorflow
+protobuf==5.28.3
+python-multipart
