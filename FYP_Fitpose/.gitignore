@@ -1,0 +1,42 @@
+# Python virtual environments
+.venv/
+venv/
+features/
+Deadlift/
+pushups_forms/
+# Python bytecode and caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+# Python packaging and build outputs
+*.egg-info/
+dist/
+build/
+
+# Flutter / Dart build artifacts
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+android/local.properties
+**/Flutter/Generated.xcconfig
+**/Flutter/ephemeral/
+**/xcuserdata/
+
+# Generated training data exports
+pose_sequences_raw.csv
+features/
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+*.log
