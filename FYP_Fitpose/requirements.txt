@@ -1,8 +1,11 @@
 fastapi
 uvicorn
 numpy
-opencv-python
-mediapipe==0.10.14
-tensorflow
-protobuf==5.28.3
+pandas
+opencv-contrib-python==4.13.0.92
+tensorflow==2.19.1
+protobuf==4.25.4
 python-multipart
+scikit-learn==1.8.0
+mediapipe==0.10.14
+

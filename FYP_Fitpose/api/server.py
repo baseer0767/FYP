@@ -45,9 +45,10 @@ EXERCISE_ALIASES = {
 }
 
 PRED_BUFFER = 5
-POSE_CONFIRM_FRAMES = 8
+POSE_CONFIRM_FRAMES = 5
 PLANK_CONFIDENCE_THRESHOLD = 0.6
 BICEP_CONFIDENCE_THRESHOLD = 0.95
+PUSHUP_SEQUENCE_LENGTH = 15
 
 PLANK_LANDMARKS = [
     "NOSE",
@@ -116,8 +117,12 @@ def load_exercise_models() -> Dict[str, ModelConfig]:
             loaded_model = load_model(str(model_path))
             input_shape = get_model_input_shape(loaded_model)
 
-            seq_len = int(input_shape[1]) if input_shape and input_shape[1] else 30
-            feat_dim = int(input_shape[2]) if input_shape and input_shape[2] else 8
+            if exercise == "pushup":
+                seq_len = 15                    # Reduced from 30 → much faster feedback
+                feat_dim = int(input_shape[2]) if input_shape and input_shape[2] else 8
+            else:
+                seq_len = int(input_shape[1]) if input_shape and input_shape[1] else 30
+                feat_dim = int(input_shape[2]) if input_shape and input_shape[2] else 8
 
             loaded[exercise] = ModelConfig(
                 model=loaded_model,
@@ -375,10 +380,10 @@ class SequenceState:
         self.pose_counter = 0
 
 
-exercise_states = {
-    name: SequenceState(cfg.sequence_length)
-    for name, cfg in models.items()
-}
+exercise_states = {}
+for name, cfg in models.items():
+    seq_len = 15 if name == "pushup" else cfg.sequence_length
+    exercise_states[name] = SequenceState(seq_len)
 
 
 # =============================
