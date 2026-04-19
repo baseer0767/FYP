@@ -8,5 +8,6 @@ tensorflow
 protobuf>=4.25.3,<5
 python-multipart
 
-#pnadas,scikit-learn,
+pnadas
+scikit-learn,
 # pip install scikit-learn==1.1.2
