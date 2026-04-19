@@ -3,7 +3,8 @@ uvicorn
 numpy
 opencv-python
 mediapipe==0.10.14
-tensorflow
+tensorflow==2.15.1
+# tensorflow
 # protobuf==5.28.3
 protobuf>=4.25.3,<5
 python-multipart
