@@ -48,7 +48,13 @@ PRED_BUFFER = 5
 POSE_CONFIRM_FRAMES = 5
 PLANK_CONFIDENCE_THRESHOLD = 0.6
 BICEP_CONFIDENCE_THRESHOLD = 0.95
+BICEP_VISIBILITY_THRESHOLD = 0.65
+BICEP_STAGE_UP_THRESHOLD = 100
+BICEP_STAGE_DOWN_THRESHOLD = 120
+BICEP_PEAK_CONTRACTION_THRESHOLD = 60
+BICEP_LOOSE_UPPER_ARM_ANGLE_THRESHOLD = 40
 PUSHUP_SEQUENCE_LENGTH = 15
+MAX_PROCESS_WIDTH = 480
 
 PLANK_LANDMARKS = [
     "NOSE",
@@ -186,6 +192,9 @@ def normalize_landmarks(landmarks):
 
 
 def calculate_angle(a, b, c):
+    a = np.asarray(a, dtype=np.float32)
+    b = np.asarray(b, dtype=np.float32)
+    c = np.asarray(c, dtype=np.float32)
     ba = a - b
     bc = c - b
     cosine = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-6)
@@ -242,6 +251,12 @@ def extract_important_keypoints(landmarks, important_landmarks):
     return np.array(row, dtype=np.float32)
 
 
+def get_joint_point_and_visibility(landmarks, side: str, joint: str):
+    idx = mp_pose.PoseLandmark[f"{side.upper()}_{joint}"].value
+    lm = landmarks[idx]
+    return [lm.x, lm.y], lm.visibility
+
+
 def predict_plank(model_config: ModelConfig, landmarks):
     row = extract_important_keypoints(landmarks, PLANK_LANDMARKS)
     X = pd.DataFrame([row])
@@ -262,18 +277,81 @@ def predict_plank(model_config: ModelConfig, landmarks):
     return "Analyzing...", confidence, "Hold position while the model stabilizes."
 
 
-def predict_bicep(model_config: ModelConfig, landmarks):
+def predict_bicep(model_config: ModelConfig, landmarks, bicep_state):
     row = extract_important_keypoints(landmarks, BICEP_LANDMARKS)
-    X = pd.DataFrame([row])
+    X = row.reshape(1, -1)
     if model_config.scaler is not None:
-        X = pd.DataFrame(model_config.scaler.transform(X))
+        feature_names = getattr(model_config.scaler, "feature_names_in_", None)
+        if feature_names is not None:
+            X = model_config.scaler.transform(pd.DataFrame(X, columns=feature_names))
+        else:
+            X = model_config.scaler.transform(X)
 
     predicted_class = model_config.model.predict(X)[0]
     proba = model_config.model.predict_proba(X)[0]
     confidence = float(round(proba[int(np.argmax(proba))], 2))
 
-    if predicted_class == "L" and confidence >= BICEP_CONFIDENCE_THRESHOLD:
+    if confidence >= BICEP_CONFIDENCE_THRESHOLD:
+        bicep_state.stand_posture = predicted_class
+
+    lean_back_error = bicep_state.stand_posture == "L"
+    weak_peak_contraction = False
+
+    for side, arm_state in (("left", bicep_state.left_arm), ("right", bicep_state.right_arm)):
+        shoulder_pt, shoulder_vis = get_joint_point_and_visibility(landmarks, side, "SHOULDER")
+        elbow_pt, elbow_vis = get_joint_point_and_visibility(landmarks, side, "ELBOW")
+        wrist_pt, wrist_vis = get_joint_point_and_visibility(landmarks, side, "WRIST")
+
+        if min(shoulder_vis, elbow_vis, wrist_vis) < BICEP_VISIBILITY_THRESHOLD:
+            continue
+
+        bicep_angle = calculate_angle(shoulder_pt, elbow_pt, wrist_pt)
+
+        if bicep_angle > BICEP_STAGE_DOWN_THRESHOLD:
+            arm_state.stage = "down"
+        elif bicep_angle < BICEP_STAGE_UP_THRESHOLD and arm_state.stage == "down":
+            arm_state.stage = "up"
+
+        shoulder_proj = [shoulder_pt[0], 1]
+        ground_angle = calculate_angle(elbow_pt, shoulder_pt, shoulder_proj)
+
+        if lean_back_error:
+            # Lean-back feedback has priority; keep per-arm flags from becoming stale.
+            arm_state.loose_upper_arm_flag = False
+            arm_state.peak_contraction_angle = 1000.0
+            continue
+
+        if ground_angle > BICEP_LOOSE_UPPER_ARM_ANGLE_THRESHOLD:
+            arm_state.loose_upper_arm_flag = True
+        else:
+            arm_state.loose_upper_arm_flag = False
+
+        if arm_state.stage == "up" and bicep_angle < arm_state.peak_contraction_angle:
+            arm_state.peak_contraction_angle = bicep_angle
+        elif arm_state.stage == "down":
+            if (
+                arm_state.peak_contraction_angle != 1000.0
+                and arm_state.peak_contraction_angle >= BICEP_PEAK_CONTRACTION_THRESHOLD
+            ):
+                weak_peak_contraction = True
+            arm_state.peak_contraction_angle = 1000.0
+
+    if lean_back_error:
         return "Incorrect", confidence, "Lean too far back. Keep your torso upright."
+
+    loose_sides = []
+    if bicep_state.left_arm.loose_upper_arm_flag:
+        loose_sides.append("left")
+    if bicep_state.right_arm.loose_upper_arm_flag:
+        loose_sides.append("right")
+
+    if loose_sides:
+        if len(loose_sides) == 2:
+            return "Incorrect", confidence, "Loose upper arm on both sides. Keep elbows fixed."
+        return "Incorrect", confidence, f"Loose upper arm on {loose_sides[0]} side. Keep elbow fixed."
+
+    if weak_peak_contraction:
+        return "Incorrect", confidence, "Weak peak contraction. Squeeze more at the top."
 
     if confidence >= BICEP_CONFIDENCE_THRESHOLD:
         return "Correct", confidence, "Good form!"
@@ -364,6 +442,16 @@ def normalize_exercise_name(raw_exercise: str) -> str:
     return EXERCISE_ALIASES.get(key, "")
 
 
+def downscale_for_pose(frame: np.ndarray, max_width: int = MAX_PROCESS_WIDTH) -> np.ndarray:
+    height, width = frame.shape[:2]
+    if width <= max_width:
+        return frame
+
+    scale = max_width / float(width)
+    target_height = max(1, int(height * scale))
+    return cv2.resize(frame, (max_width, target_height), interpolation=cv2.INTER_AREA)
+
+
 # =============================
 # STATE (PER-EXERCISE BUFFER)
 # =============================
@@ -380,10 +468,36 @@ class SequenceState:
         self.pose_counter = 0
 
 
+class BicepArmState:
+    def __init__(self):
+        self.stage = "down"
+        self.peak_contraction_angle = 1000.0
+        self.loose_upper_arm_flag = False
+
+    def clear(self):
+        self.stage = "down"
+        self.peak_contraction_angle = 1000.0
+        self.loose_upper_arm_flag = False
+
+
+class BicepRuntimeState:
+    def __init__(self):
+        self.stand_posture = 0
+        self.left_arm = BicepArmState()
+        self.right_arm = BicepArmState()
+
+    def clear(self):
+        self.stand_posture = 0
+        self.left_arm.clear()
+        self.right_arm.clear()
+
+
 exercise_states = {}
 for name, cfg in models.items():
     seq_len = 15 if name == "pushup" else cfg.sequence_length
     exercise_states[name] = SequenceState(seq_len)
+
+bicep_runtime_state = BicepRuntimeState()
 
 
 # =============================
@@ -442,6 +556,8 @@ async def predict_frame(
     if frame is None:
         raise HTTPException(status_code=400, detail="Invalid frame image")
 
+    frame = downscale_for_pose(frame)
+
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = pose.process(rgb)
 
@@ -496,7 +612,11 @@ async def predict_frame(
             label, confidence, feedback = predict_plank(model_config, results.pose_landmarks.landmark)
 
         elif normalized_exercise == "bicep":
-            label, confidence, feedback = predict_bicep(model_config, results.pose_landmarks.landmark)
+            label, confidence, feedback = predict_bicep(
+                model_config,
+                results.pose_landmarks.landmark,
+                bicep_runtime_state,
+            )
 
         else:
             label = "Unsupported exercise"
@@ -520,6 +640,7 @@ def reset(exercise: str = Query(default="all")):
     if exercise.strip().lower() == "all":
         for state in exercise_states.values():
             state.clear()
+        bicep_runtime_state.clear()
         return {"status": "all buffers reset"}
 
     if not normalized_exercise:
@@ -529,4 +650,6 @@ def reset(exercise: str = Query(default="all")):
         )
 
     exercise_states[normalized_exercise].clear()
+    if normalized_exercise == "bicep":
+        bicep_runtime_state.clear()
     return {"status": f"buffer reset for {normalized_exercise}"}

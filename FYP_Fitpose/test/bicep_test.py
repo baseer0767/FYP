@@ -30,8 +30,8 @@ BICEP_MODEL_PATH  = os.path.join(PROJECT_ROOT, "models", "bicep_curl_model.pkl")
 BICEP_SCALER_PATH = os.path.join(PROJECT_ROOT, "models", "bicep_curl_input_scaler.pkl")
 
 # Video path (set to None or 0 for webcam)
-VIDEO_PATH = os.path.join(PROJECT_ROOT, "Deadlift", "Correct", "bicep3.mp4")
-
+# VIDEO_PATH = os.path.join(PROJECT_ROOT, "Deadlift", "Correct", "bicep3.mp4")
+VIDEO_PATH = None
 # Thresholds  (same as Exercise-Correction defaults)
 VISIBILITY_THRESHOLD            = 0.65
 STAGE_UP_THRESHOLD              = 100   # elbow angle to count as "up"

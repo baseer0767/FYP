@@ -19,14 +19,16 @@ class MainInterfaceScreen extends StatefulWidget {
 class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
   CameraController? _cameraController;
   bool _isDetecting = false;
+  bool _isFrameInFlight = false;
   String _currentExercise = 'Push-Ups';
   String _currentExerciseApi = 'pushup';
   String _feedbackMessage = '';
   String _predictionResult = '';
 
   final VoiceFeedback _voiceFeedback = VoiceFeedback();
+  final http.Client _httpClient = http.Client();
 
-  final String _backendBaseUrl = "http://172.16.106.34:8000";
+  final String _backendBaseUrl = "http://10.200.255.96:8000";
 
   // Throttling for ~5 FPS
   DateTime? _lastProcessedTime;
@@ -55,6 +57,7 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
   @override
   void dispose() {
     _captureTimer?.cancel();
+    _httpClient.close();
     _cameraController?.dispose();
     super.dispose();
   }
@@ -122,12 +125,15 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
   }
 
   Future<void> _captureAndProcessFrame() async {
+    if (_isFrameInFlight) return;
+
     final now = DateTime.now();
     if (_lastProcessedTime != null &&
         now.difference(_lastProcessedTime!).inMilliseconds < throttleMilliseconds) {
       return;
     }
     _lastProcessedTime = now;
+    _isFrameInFlight = true;
 
     try {
       final XFile picture = await _cameraController!.takePicture();
@@ -139,16 +145,21 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
           _predictionResult = "Error: $e";
         });
       }
+    } finally {
+      _isFrameInFlight = false;
     }
   }
 
   Future<void> _processCameraImage(CameraImage cameraImage) async {
+    if (_isFrameInFlight) return;
+
     final now = DateTime.now();
     if (_lastProcessedTime != null &&
         now.difference(_lastProcessedTime!).inMilliseconds < throttleMilliseconds) {
       return;
     }
     _lastProcessedTime = now;
+    _isFrameInFlight = true;
 
     try {
       final Uint8List jpgBytes = await _convertCameraImageToJpg(cameraImage);
@@ -159,6 +170,8 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
           _predictionResult = "Error: $e";
         });
       }
+    } finally {
+      _isFrameInFlight = false;
     }
   }
 
@@ -168,7 +181,9 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
       request.files.add(
           http.MultipartFile.fromBytes('file', jpgBytes, filename: 'frame.jpg'));
 
-      var response = await request.send().timeout(const Duration(seconds: 10));
+        var response = await _httpClient
+          .send(request)
+          .timeout(const Duration(seconds: 4));
 
       if (response.statusCode == 200) {
         var respStr = await response.stream.bytesToString();
@@ -258,8 +273,8 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
       throw Exception('Unsupported image format');
     }
 
-    final resized = img.copyResize(convertedImage!, width: 640);
-    return Uint8List.fromList(img.encodeJpg(resized, quality: 85));
+    final resized = img.copyResize(convertedImage!, width: 480);
+    return Uint8List.fromList(img.encodeJpg(resized, quality: 70));
   }
 
   void _showExerciseSelector() {

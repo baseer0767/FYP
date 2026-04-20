@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:image/image.dart' as img;
 
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -31,13 +32,15 @@ class _VideoCheckerScreenState extends State<VideoCheckerScreen> {
   String _feedbackMessage = '';
 
   final VoiceFeedback _voiceFeedback = VoiceFeedback();
-  final String _backendBaseUrl = "http://192.168.0.38:8000";
+  final http.Client _httpClient = http.Client();
+  final String _backendBaseUrl = "http://10.200.255.96:8000";
 
   Timer? _processingTimer;
   DateTime? _lastProcessedTime;
-  DateTime? _lastFeedbackTime;
+  DateTime? _lastVoiceFeedbackTime;
+  bool _isFrameInFlight = false;
   final int _throttleMs = 200; // Send frames ~5 FPS
-  final Duration _feedbackInterval = const Duration(seconds: 5); // ← NOW 5 SECONDS
+  final Duration _voiceFeedbackInterval = const Duration(seconds: 3);
 
   @override
   void initState() {
@@ -57,6 +60,7 @@ class _VideoCheckerScreenState extends State<VideoCheckerScreen> {
   @override
   void dispose() {
     _processingTimer?.cancel();
+    _httpClient.close();
     _player.dispose();
     super.dispose();
   }
@@ -89,13 +93,13 @@ class _VideoCheckerScreenState extends State<VideoCheckerScreen> {
     setState(() {
       _isProcessing = !_isProcessing;
       _feedbackMessage = _isProcessing
-          ? 'Analyzing video... (feedback every 5 seconds)'
+          ? 'Analyzing video...'
           : 'Analysis stopped';
 
       _voiceFeedback.speak(_feedbackMessage);
 
       if (_isProcessing) {
-        _lastFeedbackTime = null;
+        _lastVoiceFeedbackTime = null;
         _resetExerciseBuffer();
         _startProcessingFrames();
       } else {
@@ -226,7 +230,9 @@ class _VideoCheckerScreenState extends State<VideoCheckerScreen> {
   }
 
   Future<void> _extractAndSendFrame() async {
-    if (!_isProcessing || !_player.state.playlist.medias.isNotEmpty) return;
+    if (!_isProcessing || _player.state.playlist.medias.isEmpty || _isFrameInFlight) {
+      return;
+    }
 
     final now = DateTime.now();
 
@@ -235,16 +241,33 @@ class _VideoCheckerScreenState extends State<VideoCheckerScreen> {
       return;
     }
     _lastProcessedTime = now;
+    _isFrameInFlight = true;
 
     try {
       final Uint8List? frameBytes = await _player.screenshot();
 
       if (frameBytes != null && frameBytes.isNotEmpty) {
-        await _sendFrameToBackend(frameBytes);
+        final optimizedFrame = _optimizeFrameForUpload(frameBytes);
+        await _sendFrameToBackend(optimizedFrame);
       }
     } catch (e) {
       debugPrint("Screenshot capture error: $e");
+    } finally {
+      _isFrameInFlight = false;
     }
+  }
+
+  Uint8List _optimizeFrameForUpload(Uint8List frameBytes) {
+    final decoded = img.decodeImage(frameBytes);
+    if (decoded == null) {
+      return frameBytes;
+    }
+
+    final resized = decoded.width > 480
+        ? img.copyResize(decoded, width: 480)
+        : decoded;
+
+    return Uint8List.fromList(img.encodeJpg(resized, quality: 70));
   }
 
   Future<void> _sendFrameToBackend(Uint8List imageBytes) async {
@@ -256,7 +279,9 @@ class _VideoCheckerScreenState extends State<VideoCheckerScreen> {
         http.MultipartFile.fromBytes('file', imageBytes, filename: 'frame.jpg'),
       );
 
-      var response = await request.send().timeout(const Duration(seconds: 10));
+      var response = await _httpClient
+          .send(request)
+          .timeout(const Duration(seconds: 4));
 
       if (response.statusCode == 200) {
         final respStr = await response.stream.bytesToString();
@@ -269,30 +294,29 @@ class _VideoCheckerScreenState extends State<VideoCheckerScreen> {
         final String newPrediction = "$prediction (${(prob * 100).toStringAsFixed(1)}%)";
         final bool shouldSpeak = prediction == "Correct" || prediction == "Incorrect";
 
-        final now = DateTime.now();
-        final bool canShowFeedback = _lastFeedbackTime == null ||
-            now.difference(_lastFeedbackTime!) >= _feedbackInterval;
-
-        if (canShowFeedback && mounted) {
+        if (mounted) {
           setState(() {
             _predictionResult = newPrediction;
             _feedbackMessage = feedback;
           });
+        }
 
-          if (shouldSpeak && feedback.isNotEmpty) {
+        if (shouldSpeak && feedback.isNotEmpty) {
+          final now = DateTime.now();
+          final canSpeak = _lastVoiceFeedbackTime == null ||
+              now.difference(_lastVoiceFeedbackTime!) >= _voiceFeedbackInterval;
+
+          if (canSpeak) {
             _voiceFeedback.speak(feedback);
+            _lastVoiceFeedbackTime = now;
           }
-
-          _lastFeedbackTime = now;
         }
       } else {
-        final now = DateTime.now();
-        if ((_lastFeedbackTime == null || now.difference(_lastFeedbackTime!) >= _feedbackInterval) && mounted) {
+        if (mounted) {
           setState(() {
             _predictionResult = "Server Error: ${response.statusCode}";
             _feedbackMessage = "Connection issue";
           });
-          _lastFeedbackTime = now;
         }
       }
     } catch (e) {
