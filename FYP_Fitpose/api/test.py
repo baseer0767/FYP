@@ -45,14 +45,10 @@ EXERCISE_ALIASES = {
 }
 
 PRED_BUFFER = 5
-POSE_CONFIRM_FRAMES = 3
+POSE_CONFIRM_FRAMES = 5
 PLANK_CONFIDENCE_THRESHOLD = 0.6
 BICEP_CONFIDENCE_THRESHOLD = 0.95
-PUSHUP_SEQUENCE_LENGTH = 10
-PUSHUP_PRED_BUFFER = 8
-PUSHUP_POSE_CONFIRM_FRAMES = 4
-PUSHUP_THRESHOLD = 0.75
-PUSHUP_BIAS = 0.12
+PUSHUP_SEQUENCE_LENGTH = 15
 
 PLANK_LANDMARKS = [
     "NOSE",
@@ -122,7 +118,7 @@ def load_exercise_models() -> Dict[str, ModelConfig]:
             input_shape = get_model_input_shape(loaded_model)
 
             if exercise == "pushup":
-                seq_len = PUSHUP_SEQUENCE_LENGTH
+                seq_len = 15                    # Reduced from 30 → much faster feedback
                 feat_dim = int(input_shape[2]) if input_shape and input_shape[2] else 8
             else:
                 seq_len = int(input_shape[1]) if input_shape and input_shape[1] else 30
@@ -175,7 +171,7 @@ models = load_exercise_models()
 mp_pose = mp.solutions.pose
 pose = mp_pose.Pose(
     static_image_mode=False,
-    model_complexity=0,
+    model_complexity=1,
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5,
 )
@@ -309,8 +305,8 @@ def get_posture_feedback(exercise: str, angles, landmarks):
 
     if avg_hip < 155:
         feedback.append("Raise your hips! Keep your body in a straight line.")
-    if avg_hip > 190:
-        feedback.append("Lower your hips! Avoid piking.")
+    if avg_hip > 185:
+        feedback.append("Do not arch your back. Keep hips aligned with shoulders.")
     if avg_knee < 160:
         feedback.append("Straighten your legs completely.")
     if avg_elbow > 165:
@@ -326,7 +322,7 @@ def get_posture_feedback(exercise: str, angles, landmarks):
         feedback.append("Move your hands back under or slightly below your shoulders.")
 
     if not feedback:
-        feedback.append("Good effort! Minor adjustments needed.")
+        feedback.append("Minor form issue. Stay controlled and stable.")
 
     return " | ".join(feedback[:2])
 
@@ -372,10 +368,10 @@ def normalize_exercise_name(raw_exercise: str) -> str:
 # STATE (PER-EXERCISE BUFFER)
 # =============================
 class SequenceState:
-    def __init__(self, sequence_length: int, pred_buffer_size: int = PRED_BUFFER):
+    def __init__(self, sequence_length: int):
         self.sequence_length = sequence_length
         self.sequence = deque(maxlen=sequence_length)
-        self.pred_buffer = deque(maxlen=pred_buffer_size)
+        self.pred_buffer = deque(maxlen=PRED_BUFFER)
         self.pose_counter = 0
 
     def clear(self):
@@ -386,10 +382,8 @@ class SequenceState:
 
 exercise_states = {}
 for name, cfg in models.items():
-    if name == "pushup":
-        exercise_states[name] = SequenceState(PUSHUP_SEQUENCE_LENGTH, PUSHUP_PRED_BUFFER)
-    else:
-        exercise_states[name] = SequenceState(cfg.sequence_length)
+    seq_len = 15 if name == "pushup" else cfg.sequence_length
+    exercise_states[name] = SequenceState(seq_len)
 
 
 # =============================
@@ -466,11 +460,7 @@ async def predict_frame(
             else:
                 state.pose_counter = max(0, state.pose_counter - 1)
 
-            required_pose_frames = (
-                PUSHUP_POSE_CONFIRM_FRAMES if normalized_exercise == "pushup" else POSE_CONFIRM_FRAMES
-            )
-
-            if state.pose_counter >= required_pose_frames:
+            if state.pose_counter >= POSE_CONFIRM_FRAMES:
                 features = extract_base_features(normalized_exercise, landmarks)
                 features = match_feature_dim(features, model_config.feature_dim)
                 state.sequence.append(features)
@@ -479,7 +469,7 @@ async def predict_frame(
                     seq = np.array(state.sequence, dtype=np.float32).reshape(
                         1, state.sequence_length, model_config.feature_dim
                     )
-                    pred_raw = model.predict(seq, verbose=0, batch_size=1)
+                    pred_raw = model.predict(seq, verbose=0)
                     pred_incorrect = parse_prediction_probability(pred_raw)
                     pred_incorrect = float(np.clip(pred_incorrect, 0.0, 1.0))
 
@@ -487,31 +477,17 @@ async def predict_frame(
                     smooth_pred = float(np.mean(state.pred_buffer))
                     current_angles = state.sequence[-1]
 
-                    if normalized_exercise == "pushup":
-                        adjusted_pred = max(0.0, smooth_pred - PUSHUP_BIAS)
-                        if adjusted_pred < PUSHUP_THRESHOLD:
-                            label = "Correct"
-                            confidence = 1 - adjusted_pred
-                            feedback = "Perfect form! Keep it up!"
-                        else:
-                            label = "Incorrect"
-                            confidence = adjusted_pred
-                            feedback = get_posture_feedback(normalized_exercise, current_angles, landmarks)
+                    if smooth_pred > 0.5:
+                        label = "Incorrect"
+                        confidence = smooth_pred
+                        feedback = get_posture_feedback(normalized_exercise, current_angles, landmarks)
                     else:
-                        if smooth_pred > 0.5:
-                            label = "Incorrect"
-                            confidence = smooth_pred
-                            feedback = get_posture_feedback(normalized_exercise, current_angles, landmarks)
-                        else:
-                            label = "Correct"
-                            confidence = 1 - smooth_pred
-                            feedback = "Great form! Keep going!"
+                        label = "Correct"
+                        confidence = 1 - smooth_pred
+                        feedback = "Great form! Keep going!"
                 else:
                     label = "Analyzing..."
-                    if normalized_exercise == "pushup":
-                        feedback = f"Collecting sequence ({len(state.sequence)}/{state.sequence_length})"
-                    else:
-                        feedback = "Hold position and keep moving naturally."
+                    feedback = "Hold position and keep moving naturally."
             else:
                 label = f"Get into {normalized_exercise} position"
                 feedback = "Align your body so the full pose is visible."

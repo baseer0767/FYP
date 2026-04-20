@@ -124,7 +124,7 @@ class _HomeScreenState extends State<HomeScreen>
                       onPressed: () {
                         Navigator.push(
                           context,
-                          MaterialPageRoute(builder: (context) => const VideoCheckerScreen()),
+                          MaterialPageRoute(builder: (context) => const MainInterfaceScreen()),
                         );
                       },
                       style: ElevatedButton.styleFrom(

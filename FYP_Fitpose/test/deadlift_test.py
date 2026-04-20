@@ -15,8 +15,8 @@ NUM_ANGLES = 9
 PRED_BUFFER = 5
 POSE_CONFIRM_FRAMES = 8
 
-VIDEO_PATH = PROJECT_ROOT / "Deadlift" / "Incorrect" / "2.mov"
-# VIDEO_PATH = None
+#VIDEO_PATH = PROJECT_ROOT / "Deadlift" / "Incorrect" / "2.mov"
+VIDEO_PATH = None
 
 # ===============================
 # LOAD MODEL
