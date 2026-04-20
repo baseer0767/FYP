@@ -3,9 +3,8 @@ uvicorn
 numpy
 opencv-python
 mediapipe==0.10.14
-tensorflow==2.15.
-# kears h5py added
-keras==2.15.0
+tensorflow==2.15.1
+keras>=2.15.0,<3
 h5py==3.10.0
 # tensorflow
 # protobuf==5.28.3

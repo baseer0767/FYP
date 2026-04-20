@@ -1,15 +1,17 @@
 from collections import deque
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Any, Dict
 
 import cv2
+import h5py
 import mediapipe as mp
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 import pickle
 import pandas as pd
-from tensorflow.keras.models import load_model
+from tensorflow.keras.models import load_model, model_from_json
 
 
 # =============================
@@ -102,6 +104,46 @@ def load_pickle_model(model_path: Path, scaler_path: Path | None = None):
     return model, scaler
 
 
+def _patch_legacy_inputlayer_config(node: Any):
+    if isinstance(node, dict):
+        if node.get("class_name") == "InputLayer":
+            cfg = node.get("config", {})
+            if "batch_shape" in cfg and "batch_input_shape" not in cfg:
+                cfg["batch_input_shape"] = cfg.pop("batch_shape")
+
+        for value in node.values():
+            _patch_legacy_inputlayer_config(value)
+    elif isinstance(node, list):
+        for item in node:
+            _patch_legacy_inputlayer_config(item)
+
+
+def load_h5_model_compat(model_path: Path):
+    try:
+        return load_model(str(model_path), compile=False)
+    except TypeError as exc:
+        # Render can resolve to a keras runtime that rejects legacy InputLayer
+        # configs saved with `batch_shape` in older .h5 files.
+        if "InputLayer" not in str(exc) or "batch_shape" not in str(exc):
+            raise
+
+        with h5py.File(model_path, "r") as h5_file:
+            model_config = h5_file.attrs.get("model_config")
+
+        if model_config is None:
+            raise
+
+        if isinstance(model_config, bytes):
+            model_config = model_config.decode("utf-8")
+
+        model_config_json = json.loads(model_config)
+        _patch_legacy_inputlayer_config(model_config_json)
+
+        rebuilt_model = model_from_json(json.dumps(model_config_json))
+        rebuilt_model.load_weights(str(model_path))
+        return rebuilt_model
+
+
 def load_exercise_models() -> Dict[str, ModelConfig]:
     loaded = {}
     missing = []
@@ -113,8 +155,7 @@ def load_exercise_models() -> Dict[str, ModelConfig]:
             continue
 
         if model_path.suffix.lower() == ".h5":
-            # Inference-only load avoids optimizer/loss deserialization issues across envs.
-            loaded_model = load_model(str(model_path), compile=False)
+            loaded_model = load_h5_model_compat(model_path)
             input_shape = get_model_input_shape(loaded_model)
 
             seq_len = int(input_shape[1]) if input_shape and input_shape[1] else 30
