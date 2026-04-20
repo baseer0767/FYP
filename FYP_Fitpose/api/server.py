@@ -113,7 +113,8 @@ def load_exercise_models() -> Dict[str, ModelConfig]:
             continue
 
         if model_path.suffix.lower() == ".h5":
-            loaded_model = load_model(str(model_path))
+            # Inference-only load avoids optimizer/loss deserialization issues across envs.
+            loaded_model = load_model(str(model_path), compile=False)
             input_shape = get_model_input_shape(loaded_model)
 
             seq_len = int(input_shape[1]) if input_shape and input_shape[1] else 30
