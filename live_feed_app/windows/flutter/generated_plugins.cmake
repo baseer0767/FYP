@@ -3,11 +3,13 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  app_links
   camera_windows
   file_selector_windows
   flutter_tts
   media_kit_libs_windows_video
   media_kit_video
+  url_launcher_windows
   volume_controller
 )
 
