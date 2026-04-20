@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'main_interface.dart';  // Adjust path if your files are in subfolders, e.g., '../screens/main_interface_screen.dart'
-import 'video_player.dart';
+import 'login_screen.dart'; // 👈 ADD THIS
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -45,25 +44,31 @@ class _HomeScreenState extends State<HomeScreen>
     super.dispose();
   }
 
+  /// 🔥 REUSABLE BACKGROUND (use same in all screens)
+  Widget buildBackground() {
+    return Stack(
+      children: [
+        Container(
+          decoration: const BoxDecoration(
+            image: DecorationImage(
+              image: AssetImage('assets/background.png'),
+              fit: BoxFit.cover,
+            ),
+          ),
+        ),
+        Container(
+          color: Colors.black.withOpacity(0.6),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Stack(
         children: [
-          // Background image
-          Container(
-            decoration: const BoxDecoration(
-              image: DecorationImage(
-                image: AssetImage('assets/background.png'),
-                fit: BoxFit.cover,
-              ),
-            ),
-          ),
-
-          // Darker overlay for better contrast
-          Container(
-            color: Colors.black.withOpacity(0.6),
-          ),
+          buildBackground(),
 
           // Main content
           Center(
@@ -74,7 +79,6 @@ class _HomeScreenState extends State<HomeScreen>
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // Main Heading
                     const Text(
                       'FitPose',
                       style: TextStyle(
@@ -91,8 +95,9 @@ class _HomeScreenState extends State<HomeScreen>
                         ],
                       ),
                     ),
+
                     const SizedBox(height: 16),
-                    // Subtitle
+
                     Container(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 20, vertical: 12),
@@ -118,13 +123,15 @@ class _HomeScreenState extends State<HomeScreen>
                         ),
                       ),
                     ),
+
                     const SizedBox(height: 40),
-                    // Get Started Button
+
+                    /// 🔥 UPDATED BUTTON
                     ElevatedButton(
                       onPressed: () {
                         Navigator.push(
                           context,
-                          MaterialPageRoute(builder: (context) => const MainInterfaceScreen()),
+                          MaterialPageRoute(builder: (context) => const LoginScreen()),
                         );
                       },
                       style: ElevatedButton.styleFrom(
@@ -139,17 +146,10 @@ class _HomeScreenState extends State<HomeScreen>
                       child: const Text(
                         'Get Started',
                         style: TextStyle(
-                          color: Colors.indigo, // keeps dark blue theme
+                          color: Colors.indigo,
                           fontSize: 20,
                           fontWeight: FontWeight.bold,
                           letterSpacing: 1.5,
-                          shadows: [
-                            Shadow(
-                              offset: Offset(1, 1),
-                              blurRadius: 2,
-                              color: Colors.black26,
-                            ),
-                          ],
                         ),
                       ),
                     ),

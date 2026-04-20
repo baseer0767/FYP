@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';           // Added for Queue
 import 'dart:typed_data';
 import 'dart:io' show Platform;
 
@@ -24,15 +25,23 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
   String _currentExerciseApi = 'pushup';
   String _feedbackMessage = '';
   String _predictionResult = '';
+  DateTime? _lastVoiceTime;
+  String _lastSpokenFeedback = '';
+  final Duration _voiceInterval = const Duration(seconds: 2);
 
   final VoiceFeedback _voiceFeedback = VoiceFeedback();
   final http.Client _httpClient = http.Client();
 
-  final String _backendBaseUrl = "http://10.200.255.96:8000";
+  final String _backendBaseUrl = "http://192.168.100.6:8000";
 
-  // Throttling for ~5 FPS
+  // ==================== NEW: Drop-Oldest Frame Queue ====================
+  final Queue<Uint8List> _frameQueue = Queue<Uint8List>();
+  bool _isProcessing = false;                    // Replaced _isFramePipelineBusy
+  Timer? _queueProcessorTimer;
+
+  // Throttling
   DateTime? _lastProcessedTime;
-  final int throttleMilliseconds = 200;
+  final int throttleMilliseconds = 250;         // You can keep 250 or increase to 300
   Timer? _captureTimer;
 
   @override
@@ -41,12 +50,22 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
     _initializeCamera();
   }
 
+  @override
+  void dispose() {
+    _captureTimer?.cancel();
+    _queueProcessorTimer?.cancel();
+    _cameraController?.dispose();
+    _httpClient.close();
+    _frameQueue.clear();
+    super.dispose();
+  }
+
   Future<void> _initializeCamera() async {
     final cameras = await availableCameras();
     if (cameras.isNotEmpty) {
       _cameraController = CameraController(
         cameras.first,
-        ResolutionPreset.medium,
+        ResolutionPreset.low,
         enableAudio: false,
       );
       await _cameraController!.initialize();
@@ -54,20 +73,17 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
     }
   }
 
-  @override
-  void dispose() {
-    _captureTimer?.cancel();
-    _httpClient.close();
-    _cameraController?.dispose();
-    super.dispose();
-  }
-
   void _toggleDetection() {
     setState(() {
       _isDetecting = !_isDetecting;
       _feedbackMessage = _isDetecting
-          ? 'Starting detection. Keep your body straight!'
+          ? _buildStartHint(_currentExerciseApi)
           : 'Detection stopped. Great effort!';
+
+      if (_isDetecting) {
+        _lastVoiceTime = null;
+        _lastSpokenFeedback = '';
+      }
 
       _voiceFeedback.speak(_feedbackMessage);
 
@@ -81,16 +97,23 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
   }
 
   Uri _buildPredictUri() {
-    return Uri.parse("$_backendBaseUrl/predict_frame").replace(
-      queryParameters: {'exercise': _currentExerciseApi},
-    );
+    return Uri.parse(
+      "$_backendBaseUrl/predict_frame",
+    ).replace(queryParameters: {'exercise': _currentExerciseApi});
+  }
+
+  String _buildStartHint(String exerciseApi) {
+    if (exerciseApi == 'pushup') {
+      return 'Starting push-up detection. Hold steady briefly while sequence builds.';
+    }
+    return 'Starting detection. Keep your full body in frame.';
   }
 
   Future<void> _resetExerciseBuffer() async {
     try {
-      final uri = Uri.parse("$_backendBaseUrl/reset").replace(
-        queryParameters: {'exercise': _currentExerciseApi},
-      );
+      final uri = Uri.parse(
+        "$_backendBaseUrl/reset",
+      ).replace(queryParameters: {'exercise': _currentExerciseApi});
       await http.post(uri).timeout(const Duration(seconds: 3));
     } catch (_) {
       // Buffer reset is best-effort only.
@@ -98,14 +121,19 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
   }
 
   void _startDetection() {
+    _frameQueue.clear();
+    _isProcessing = false;
     _lastProcessedTime = null;
 
     if (Platform.isWindows) {
-      _captureTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
-        _captureAndProcessFrame();
-      });
+      _captureTimer = Timer.periodic(
+        Duration(milliseconds: throttleMilliseconds),
+        (_) {
+          _captureAndProcessFrame();
+        },
+      );
     } else {
-      _cameraController!.startImageStream(_processCameraImage);
+      _cameraController!.startImageStream(_onCameraFrameAvailable);
     }
   }
 
@@ -115,6 +143,10 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
     } else {
       _cameraController!.stopImageStream();
     }
+    _queueProcessorTimer?.cancel();
+    _frameQueue.clear();
+    _isProcessing = false;
+
     _voiceFeedback.stop();
     if (mounted) {
       setState(() {
@@ -124,8 +156,66 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
     }
   }
 
+  // ==================== NEW: Mobile Frame Handler with Queue ====================
+  void _onCameraFrameAvailable(CameraImage cameraImage) {
+    if (!_isDetecting) return;
+
+    // Convert to JPG asynchronously (non-blocking)
+    _convertCameraImageToJpg(cameraImage).then((jpgBytes) {
+      if (jpgBytes == null) return;
+
+      // Drop oldest frame if queue is full (prevents backlog)
+      if (_frameQueue.length >= 6) {
+        _frameQueue.removeFirst();
+      }
+      _frameQueue.addLast(jpgBytes);
+
+      // Start processing if not busy
+      if (!_isProcessing) {
+        _processNextFrameFromQueue();
+      }
+    }).catchError((e) {
+      debugPrint("Frame conversion error: $e");
+    });
+  }
+
+  // ==================== NEW: Queue Processor ====================
+  Future<void> _processNextFrameFromQueue() async {
+    if (!_isDetecting || _isProcessing || _frameQueue.isEmpty) {
+      return;
+    }
+
+    _isProcessing = true;
+
+    try {
+      final Uint8List jpgBytes = _frameQueue.removeFirst();
+      await _sendFrameToBackend(jpgBytes);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _predictionResult = "Error: $e";
+        });
+      }
+    } finally {
+      _isProcessing = false;
+
+      // Process next frame immediately if queue still has frames
+      if (_frameQueue.isNotEmpty && _isDetecting) {
+        Future.delayed(const Duration(milliseconds: 30), () {
+          _processNextFrameFromQueue();
+        });
+      }
+    }
+  }
+
+  // Kept your original Windows capture method (slightly updated)
   Future<void> _captureAndProcessFrame() async {
-    if (_isFrameInFlight) return;
+    if (!_isDetecting ||
+        _cameraController == null ||
+        !_cameraController!.value.isInitialized ||
+        _isProcessing) {
+      return;
+    }
 
     final now = DateTime.now();
     if (_lastProcessedTime != null &&
@@ -138,32 +228,15 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
     try {
       final XFile picture = await _cameraController!.takePicture();
       final Uint8List jpgBytes = await picture.readAsBytes();
-      await _sendFrameToBackend(jpgBytes);
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _predictionResult = "Error: $e";
-        });
+
+      if (_frameQueue.length >= 6) {
+        _frameQueue.removeFirst();
       }
-    } finally {
-      _isFrameInFlight = false;
-    }
-  }
+      _frameQueue.addLast(jpgBytes);
 
-  Future<void> _processCameraImage(CameraImage cameraImage) async {
-    if (_isFrameInFlight) return;
-
-    final now = DateTime.now();
-    if (_lastProcessedTime != null &&
-        now.difference(_lastProcessedTime!).inMilliseconds < throttleMilliseconds) {
-      return;
-    }
-    _lastProcessedTime = now;
-    _isFrameInFlight = true;
-
-    try {
-      final Uint8List jpgBytes = await _convertCameraImageToJpg(cameraImage);
-      await _sendFrameToBackend(jpgBytes);
+      if (!_isProcessing) {
+        _processNextFrameFromQueue();
+      }
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -176,14 +249,17 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
   }
 
   Future<void> _sendFrameToBackend(Uint8List jpgBytes) async {
+    if (!_isDetecting) return;
+
     try {
       var request = http.MultipartRequest('POST', _buildPredictUri());
       request.files.add(
-          http.MultipartFile.fromBytes('file', jpgBytes, filename: 'frame.jpg'));
+        http.MultipartFile.fromBytes('file', jpgBytes, filename: 'frame.jpg'),
+      );
 
-        var response = await _httpClient
+      var response = await _httpClient
           .send(request)
-          .timeout(const Duration(seconds: 4));
+          .timeout(const Duration(seconds: 5));   // Slightly increased timeout
 
       if (response.statusCode == 200) {
         var respStr = await response.stream.bytesToString();
@@ -193,22 +269,42 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
         double prob = (data['probability'] as num?)?.toDouble() ?? 0.0;
         String feedback = data['feedback'] ?? 'No feedback';
 
-        String newPrediction = "$prediction (${(prob * 100).toStringAsFixed(1)}%)";
+        final bool isFinalPrediction =
+            prediction == 'Correct' || prediction == 'Incorrect';
+        String newPrediction = isFinalPrediction
+            ? "$prediction (${(prob * 100).toStringAsFixed(1)}%)"
+            : prediction;
 
-        bool shouldSpeak = prediction == "Correct" || prediction == "Incorrect";
+        final now = DateTime.now();
+        bool canSpeakByTime =
+            _lastVoiceTime == null ||
+            now.difference(_lastVoiceTime!) >= _voiceInterval;
+        bool shouldSpeak =
+            isFinalPrediction &&
+            feedback.isNotEmpty &&
+            canSpeakByTime &&
+            feedback != _lastSpokenFeedback;
 
-        if (mounted) {
-          setState(() {
-            _predictionResult = newPrediction;
-            _feedbackMessage = feedback;
-          });
+        if (mounted && _isDetecting) {
+          final bool uiChanged =
+              _predictionResult != newPrediction ||
+              _feedbackMessage != feedback;
 
-          if (shouldSpeak && feedback.isNotEmpty) {
+          if (uiChanged) {
+            setState(() {
+              _predictionResult = newPrediction;
+              _feedbackMessage = feedback;
+            });
+          }
+
+          if (shouldSpeak) {
             _voiceFeedback.speak(feedback);
+            _lastVoiceTime = now;
+            _lastSpokenFeedback = feedback;
           }
         }
       } else {
-        if (mounted) {
+        if (mounted && _isDetecting) {
           setState(() {
             _predictionResult = "Server Error: ${response.statusCode}";
             _feedbackMessage = "Connection issue";
@@ -216,7 +312,7 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
         }
       }
     } catch (e) {
-      if (mounted) {
+      if (mounted && _isDetecting) {
         setState(() {
           _predictionResult = "Error: $e";
           _feedbackMessage = "Check connection or camera";
@@ -273,8 +369,11 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
       throw Exception('Unsupported image format');
     }
 
-    final resized = img.copyResize(convertedImage!, width: 480);
-    return Uint8List.fromList(img.encodeJpg(resized, quality: 70));
+    final img.Image source = convertedImage!;
+    final img.Image compressed = source.width > 320
+        ? img.copyResize(source, width: 320)
+        : source;
+    return Uint8List.fromList(img.encodeJpg(compressed, quality: 60));
   }
 
   void _showExerciseSelector() {
@@ -298,10 +397,17 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
               ),
             ),
             const Divider(
-                color: Colors.white54, thickness: 1, indent: 16, endIndent: 16),
+              color: Colors.white54,
+              thickness: 1,
+              indent: 16,
+              endIndent: 16,
+            ),
             ListTile(
               leading: const Icon(Icons.fitness_center, color: Colors.white),
-              title: const Text('Push-Ups', style: TextStyle(color: Colors.white)),
+              title: const Text(
+                'Push-Ups',
+                style: TextStyle(color: Colors.white),
+              ),
               onTap: () {
                 setState(() {
                   _currentExercise = 'Push-Ups';
@@ -315,7 +421,10 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
             ),
             ListTile(
               leading: const Icon(Icons.fitness_center, color: Colors.white),
-              title: const Text('Deadlift', style: TextStyle(color: Colors.white)),
+              title: const Text(
+                'Deadlift',
+                style: TextStyle(color: Colors.white),
+              ),
               onTap: () {
                 setState(() {
                   _currentExercise = 'Deadlift';
@@ -343,7 +452,10 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
             ),
             ListTile(
               leading: const Icon(Icons.fitness_center, color: Colors.white),
-              title: const Text('Bicep Curl', style: TextStyle(color: Colors.white)),
+              title: const Text(
+                'Bicep Curl',
+                style: TextStyle(color: Colors.white),
+              ),
               onTap: () {
                 setState(() {
                   _currentExercise = 'Bicep Curl';
@@ -398,13 +510,20 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
                           ),
                           IconButton(
                             onPressed: () {},
-                            icon: const Icon(Icons.settings, color: Colors.white, size: 28),
+                            icon: const Icon(
+                              Icons.settings,
+                              color: Colors.white,
+                              size: 28,
+                            ),
                           ),
                         ],
                       ),
                       const SizedBox(height: 8),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
                         decoration: BoxDecoration(
                           color: Colors.white.withOpacity(0.2),
                           borderRadius: BorderRadius.circular(20),
@@ -412,7 +531,11 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.fitness_center, color: Colors.white, size: 20),
+                            const Icon(
+                              Icons.fitness_center,
+                              color: Colors.white,
+                              size: 20,
+                            ),
                             const SizedBox(width: 8),
                             Text(
                               _currentExercise,
@@ -431,7 +554,9 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
                         style: TextStyle(
                           color: _predictionResult.contains("Correct")
                               ? Colors.green
-                              : (_predictionResult.contains("Incorrect") ? Colors.red : Colors.yellow),
+                              : (_predictionResult.contains("Incorrect")
+                                    ? Colors.red
+                                    : Colors.yellow),
                           fontSize: 20,
                           fontWeight: FontWeight.bold,
                         ),
@@ -468,7 +593,10 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
                         ),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 32,
+                            vertical: 14,
+                          ),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(30),
                           ),
@@ -493,12 +621,20 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
                   children: [
                     IconButton(
                       onPressed: _showExerciseSelector,
-                      icon: const Icon(Icons.list, color: Colors.white, size: 30),
+                      icon: const Icon(
+                        Icons.list,
+                        color: Colors.white,
+                        size: 30,
+                      ),
                       tooltip: 'Select Exercise',
                     ),
                     IconButton(
                       onPressed: () {},
-                      icon: const Icon(Icons.history, color: Colors.white, size: 30),
+                      icon: const Icon(
+                        Icons.history,
+                        color: Colors.white,
+                        size: 30,
+                      ),
                       tooltip: 'Workout History',
                     ),
                   ],

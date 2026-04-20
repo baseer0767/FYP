@@ -8,13 +8,15 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, roc_curve, auc, classification_report
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 # ===============================
-# PARAMETERS
+# PARAMETERS (UPDATED FOR FASTER DETECTION)
 # ===============================
-CSV_PATH = "pose_sequences_raw.csv"
-SEQUENCE_LENGTH = 30
-STRIDE = 15                 # Overlap 50%
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CSV_PATH = PROJECT_ROOT / "features" / "pushups_sequences_raw.csv"
+SEQUENCE_LENGTH = 10          # Reduced from 30
+STRIDE = 5                    # Reduced from 15 (≈50% overlap)
 NUM_LANDMARKS = 33
 XYZ = 3
 NUM_ANGLES = 8
@@ -26,11 +28,21 @@ df = pd.read_csv(CSV_PATH)
 X_raw = df.iloc[:, :-1].values
 y_raw = df.iloc[:, -1].values
 
-# ===============================
-# RESHAPE RAW DATA PER VIDEO
-# ===============================
-# Assuming CSV rows are already in sequences; if not, you need to group per video
-X_raw = X_raw.reshape(-1, SEQUENCE_LENGTH, NUM_LANDMARKS, XYZ)
+# Reshape each CSV row back to (frames, 33, 3).
+# Important: do NOT use training window length here, otherwise labels and samples go out of sync.
+features_per_frame = NUM_LANDMARKS * XYZ
+if X_raw.shape[1] % features_per_frame != 0:
+    raise ValueError(
+        f"Invalid feature width {X_raw.shape[1]}. Expected a multiple of {features_per_frame}."
+    )
+
+original_sequence_length = X_raw.shape[1] // features_per_frame
+X_raw = X_raw.reshape(-1, original_sequence_length, NUM_LANDMARKS, XYZ)
+
+if len(X_raw) != len(y_raw):
+    raise ValueError(
+        f"Sample/label mismatch after reshape: {len(X_raw)} samples vs {len(y_raw)} labels."
+    )
 
 # ===============================
 # PREPROCESSING FUNCTIONS
@@ -67,22 +79,26 @@ def extract_angles(sequence):
 # ===============================
 # CREATE OVERLAPPING SEQUENCES WITH STRIDE
 # ===============================
-def create_sequences_with_stride(X_data, y_data, seq_len=30, stride=15):
+def create_sequences_with_stride(X_data, y_data, seq_len=10, stride=5):
     sequences = []
     labels = []
     for i in range(len(X_data)):
-        video_seq = X_data[i]  # shape: SEQUENCE_LENGTH x 33 x 3
+        video_seq = X_data[i]                    # shape: (old_seq_len, 33, 3)
         label = y_data[i]
         total_frames = video_seq.shape[0]
+        
         for start in range(0, total_frames - seq_len + 1, stride):
             end = start + seq_len
             seq = video_seq[start:end]
             seq_angles = extract_angles(seq)
             sequences.append(seq_angles)
             labels.append(label)
+    
     return np.array(sequences), np.array(labels)
 
 X_sequences, y_sequences = create_sequences_with_stride(X_raw, y_raw, SEQUENCE_LENGTH, STRIDE)
+
+print(f"Created {len(X_sequences)} sequences of length {SEQUENCE_LENGTH} with stride {STRIDE}")
 
 # ===============================
 # ENCODE LABELS
@@ -94,11 +110,11 @@ y_encoded = le.fit_transform(y_sequences)
 # TRAIN / TEST SPLIT
 # ===============================
 X_train, X_test, y_train, y_test = train_test_split(
-    X_sequences, y_encoded, test_size=0.2, random_state=None, shuffle=True
+    X_sequences, y_encoded, test_size=0.2, random_state=42, shuffle=True
 )
 
 # ===============================
-# MODEL ARCHITECTURE
+# MODEL ARCHITECTURE (Slightly adjusted for shorter sequences)
 # ===============================
 model = Sequential([
     LSTM(128, return_sequences=True, input_shape=(SEQUENCE_LENGTH, NUM_ANGLES)),
@@ -123,8 +139,8 @@ model.compile(
 # CALLBACKS
 # ===============================
 callbacks = [
-    EarlyStopping(patience=12, restore_best_weights=True),
-    ReduceLROnPlateau(patience=6, factor=0.5)
+    EarlyStopping(patience=15, restore_best_weights=True),   # Slightly more patient
+    ReduceLROnPlateau(patience=6, factor=0.5, min_lr=1e-5)
 ]
 
 # ===============================
@@ -134,12 +150,12 @@ history = model.fit(
     X_train, y_train,
     validation_split=0.2,
     epochs=500,
-    batch_size=16,
+    batch_size=32,                    # Slightly larger batch size
     callbacks=callbacks
 )
 
 # ===============================
-# EVALUATE TRAINING AND TEST ACCURACY
+# EVALUATE
 # ===============================
 train_loss, train_acc = model.evaluate(X_train, y_train, verbose=0)
 print(f"✅ Training Accuracy: {train_acc * 100:.2f}%")
@@ -150,33 +166,27 @@ print(f"✅ Test Accuracy: {test_acc * 100:.2f}%")
 # ===============================
 # SAVE MODEL
 # ===============================
-model.save("pushup_lstm_30f_stride_2.h5")
-print("💾 Model saved as pushup_lstm_30f_stride_2.h5")
+model.save("pushup_lstm_10f_stride_5.h5")
+print("💾 Model saved as pushup_lstm_10f_stride_5.h5")
 
 # ===============================
-# PREDICTIONS ON TEST SET
+# PREDICTIONS & EVALUATION
 # ===============================
 y_pred_prob = model.predict(X_test, verbose=0)
 y_pred = (y_pred_prob > 0.5).astype(int).flatten()
 
-# ===============================
-# CONFUSION MATRIX
-# ===============================
+# Confusion Matrix
 cm = confusion_matrix(y_test, y_pred)
 disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=le.classes_)
 disp.plot(cmap=plt.cm.Blues)
 plt.title("Confusion Matrix")
 plt.show()
 
-# ===============================
-# CLASSIFICATION REPORT
-# ===============================
-print("Classification Report:\n")
+# Classification Report
+print("\nClassification Report:\n")
 print(classification_report(y_test, y_pred, target_names=le.classes_))
 
-# ===============================
-# ROC CURVE
-# ===============================
+# ROC Curve
 fpr, tpr, thresholds = roc_curve(y_test, y_pred_prob)
 roc_auc = auc(fpr, tpr)
 
@@ -187,31 +197,27 @@ plt.xlim([0.0, 1.0])
 plt.ylim([0.0, 1.05])
 plt.xlabel('False Positive Rate')
 plt.ylabel('True Positive Rate')
-plt.title('Receiver Operating Characteristic (ROC) Curve')
+plt.title('ROC Curve')
 plt.legend(loc="lower right")
 plt.show()
 
-# ===============================
-# TRAINING AND VALIDATION CURVES
-# ===============================
-plt.figure(figsize=(12,5))
-
-# Accuracy
-plt.subplot(1,2,1)
+# Training Curves
+plt.figure(figsize=(12, 5))
+plt.subplot(1, 2, 1)
 plt.plot(history.history['accuracy'], label='Train Accuracy')
 plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
 plt.xlabel('Epoch')
 plt.ylabel('Accuracy')
-plt.title('Training and Validation Accuracy')
+plt.title('Training vs Validation Accuracy')
 plt.legend()
 
-# Loss
-plt.subplot(1,2,2)
+plt.subplot(1, 2, 2)
 plt.plot(history.history['loss'], label='Train Loss')
 plt.plot(history.history['val_loss'], label='Validation Loss')
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
-plt.title('Training and Validation Loss')
+plt.title('Training vs Validation Loss')
 plt.legend()
 
+plt.tight_layout()
 plt.show()

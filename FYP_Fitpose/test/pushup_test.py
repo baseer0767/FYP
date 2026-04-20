@@ -9,13 +9,19 @@ from pathlib import Path
 # PARAMETERS
 # ===============================
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-MODEL_PATH = PROJECT_ROOT / "models" / "pushup_lstm_30f_stride_2.h5"
-SEQUENCE_LENGTH = 30
-NUM_ANGLES = 8
-PRED_BUFFER = 5
-POSE_CONFIRM_FRAMES = 8
+MODEL_PATH = PROJECT_ROOT / "models" / "pushup_lstm_10f_stride_5.h5"
 
-VIDEO_PATH = PROJECT_ROOT / "pushups_forms" / "incorrect" / "1.mp4"
+SEQUENCE_LENGTH = 10
+NUM_ANGLES = 8
+PRED_BUFFER = 8                    # Increased for better stability
+POSE_CONFIRM_FRAMES = 4
+
+# UPDATED THRESHOLD + BIAS (to fix correct pushups being marked wrong)
+THRESHOLD = 0.75                   # Higher = more lenient toward "Correct"
+BIAS = 0.12                        # Reduces false "Incorrect" predictions
+
+VIDEO_PATH = None
+# VIDEO_PATH = PROJECT_ROOT / "pushups_forms" / "correct" / "Copy of push up 164.mp4"
 
 # ===============================
 # LOAD MODEL
@@ -68,7 +74,7 @@ def extract_angles(frame_landmarks):
     ], dtype=np.float32)
 
 # ===============================
-# ENHANCED POSTURE FEEDBACK LOGIC
+# POSTURE FEEDBACK
 # ===============================
 def get_posture_feedback(angles, landmarks):
     feedback = []
@@ -79,30 +85,25 @@ def get_posture_feedback(angles, landmarks):
     avg_knee = np.mean(angles[6:8])
 
     if avg_hip < 155:
-        feedback.append("Raise your hips! Keep body in a straight line.")
-
-    if avg_hip > 190:  # Adjust threshold based on your testing (higher than straight)
-        feedback.append("Lower your hips! Avoid piking — keep body straight.")
-
+        feedback.append("Raise your hips! Keep body straight.")
+    if avg_hip > 190:
+        feedback.append("Lower your hips! Avoid piking.")
     if avg_knee < 160:
         feedback.append("Straighten your legs fully.")
-
     if avg_elbow > 165:
-        feedback.append("Lower your body — bend elbows more.")
-
+        feedback.append("Lower your body more.")
     if avg_elbow < 70:
-        feedback.append("Push up higher — don't collapse.")
-
+        feedback.append("Push up higher.")
     if avg_shoulder < 150:
-        feedback.append("Pull shoulders back, elbows closer to body.")
+        feedback.append("Pull shoulders back, elbows closer.")
 
     avg_shoulder_x = (landmarks[11][0] + landmarks[12][0]) / 2
     avg_wrist_x = (landmarks[15][0] + landmarks[16][0]) / 2
     if avg_wrist_x < avg_shoulder_x - 0.08:
-        feedback.append("Move hands back! Place under or near shoulders.")
+        feedback.append("Place hands under shoulders.")
 
     if not feedback:
-        feedback.append("Minor form issue. Stay tight and controlled!")
+        feedback.append("Good effort! Minor adjustments needed.")
 
     return " | ".join(feedback[:2])
 
@@ -138,7 +139,7 @@ sequence_buffer = deque(maxlen=SEQUENCE_LENGTH)
 pred_buffer = deque(maxlen=PRED_BUFFER)
 pose_valid_counter = 0
 
-print("Push-up detection started. Press 'q' to quit.")
+print(f"Push-up detection started (Threshold={THRESHOLD}, Bias={BIAS}). Press 'q' to quit.")
 
 # ===============================
 # MAIN LOOP
@@ -176,23 +177,31 @@ while cap.isOpened():
 
             if len(sequence_buffer) == SEQUENCE_LENGTH:
                 input_seq = np.array(sequence_buffer).reshape(1, SEQUENCE_LENGTH, NUM_ANGLES)
-                pred = model.predict(input_seq, verbose=0)[0][0]
-                pred_buffer.append(pred)
-                smooth_pred = np.mean(pred_buffer)
+                prob_incorrect = model.predict(input_seq, verbose=0)[0][0]
+                
+                pred_buffer.append(prob_incorrect)
+                smooth_prob = np.mean(pred_buffer)
 
-                label = "Incorrect" if smooth_pred > 0.5 else "Correct"
-                confidence = smooth_pred if label == "Incorrect" else (1 - smooth_pred)
-                text_color = (0, 0, 255) if label == "Incorrect" else (0, 255, 0)
+                # Apply bias to reduce false "Incorrect"
+                adjusted_prob = max(0.0, smooth_prob - BIAS)
 
-                main_text = f"Push-up: {label} ({confidence:.2%})"
-
-                if label == "Incorrect":
-                    feedback_text = get_posture_feedback(angles, landmarks)
-                else:
+                # === THRESHOLD LOGIC ===
+                if adjusted_prob < THRESHOLD:           # More lenient toward Correct
+                    label = "Correct"
+                    confidence = (1 - adjusted_prob) * 100
+                    text_color = (0, 255, 0)
                     feedback_text = "Perfect form! Keep it up!"
+                else:
+                    label = "Incorrect"
+                    confidence = adjusted_prob * 100
+                    text_color = (0, 0, 255)
+                    feedback_text = get_posture_feedback(angles, landmarks)
+
+                main_text = f"Push-up: {label} ({confidence:.1f}%)"
+
             else:
                 main_text = "Analyzing form..."
-                feedback_text = "Hold position — collecting sequence"
+                feedback_text = f"Collecting sequence ({len(sequence_buffer)}/{SEQUENCE_LENGTH})"
                 text_color = (255, 255, 0)
         else:
             main_text = "Get into push-up position"
@@ -206,16 +215,16 @@ while cap.isOpened():
         feedback_text = "Make sure full body is in frame"
         text_color = (0, 0, 255)
 
-    # === IMPROVED TEXT DISPLAY WITH WRAPPING ===
+    # === TEXT DISPLAY ===
     cv2.putText(frame, main_text, (30, 70),
                 cv2.FONT_HERSHEY_DUPLEX, 1.4, text_color, 3)
 
     # Auto-wrap feedback text
     max_width = frame.shape[1] - 60
     font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.9
+    font_scale = 0.85
     thickness = 2
-    line_spacing = 35
+    line_spacing = 32
 
     words = feedback_text.split(' ')
     lines = []
@@ -236,12 +245,12 @@ while cap.isOpened():
 
     # Dark semi-transparent background for readability
     overlay = frame.copy()
-    cv2.rectangle(overlay, (10, 20), (frame.shape[1]-10, 130 + len(lines)*line_spacing + 20), (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.4, frame, 0.6, 0, frame)
+    cv2.rectangle(overlay, (10, 20), (frame.shape[1]-10, 135 + len(lines)*line_spacing), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
 
     # Draw wrapped lines
     for i, line in enumerate(lines[:3]):
-        cv2.putText(frame, line, (30, 130 + i * line_spacing),
+        cv2.putText(frame, line, (30, 125 + i * line_spacing),
                     font, font_scale, text_color, thickness)
 
     cv2.imshow("Push-up Form Detection", frame)

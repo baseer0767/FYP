@@ -32,8 +32,7 @@ class _VideoCheckerScreenState extends State<VideoCheckerScreen> {
   String _feedbackMessage = '';
 
   final VoiceFeedback _voiceFeedback = VoiceFeedback();
-  final http.Client _httpClient = http.Client();
-  final String _backendBaseUrl = "http://10.200.255.96:8000";
+  final String _backendBaseUrl = "http://10.200.254.199:8000";
 
   Timer? _processingTimer;
   DateTime? _lastProcessedTime;
