@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart'; // ✅ ADD
 import 'signup_screen.dart';
 import 'main_interface.dart';
+import 'video_player.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -110,6 +111,8 @@ class _LoginScreenState extends State<LoginScreen> {
                     width: 300,
                     child: TextField(
                       controller: _emailController, // ✅ CONNECTED
+                      textInputAction: TextInputAction.next,
+                      onSubmitted: (_) => FocusScope.of(context).nextFocus(),
                       style: const TextStyle(color: Colors.white),
                       decoration: InputDecoration(
                         hintText: "Email",
@@ -131,6 +134,12 @@ class _LoginScreenState extends State<LoginScreen> {
                     child: TextField(
                       controller: _passwordController, // ✅ CONNECTED
                       obscureText: true,
+                      textInputAction: TextInputAction.done,
+                      onSubmitted: (_) {
+                        if (!_isLoading) {
+                          _signIn();
+                        }
+                      },
                       style: const TextStyle(color: Colors.white),
                       decoration: InputDecoration(
                         hintText: "Password",

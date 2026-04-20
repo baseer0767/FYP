@@ -129,9 +129,9 @@ class _HomeScreenState extends State<HomeScreen>
                     /// 🔥 UPDATED BUTTON
                     ElevatedButton(
                       onPressed: () {
-                        Navigator.pushReplacement(
+                        Navigator.push(
                           context,
-                          MaterialPageRoute(builder: (context) => const VideoCheckerScreen()),
+                          MaterialPageRoute(builder: (context) => const LoginScreen()),
                         );
                       },
                       style: ElevatedButton.styleFrom(
