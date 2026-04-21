@@ -23,6 +23,7 @@ class VideoCheckerScreen extends StatefulWidget {
 class _VideoCheckerScreenState extends State<VideoCheckerScreen> {
   late final Player _player;
   VideoController? _videoController;
+  final http.Client _httpClient = http.Client();
 
   bool _isProcessing = false;
   bool _isVideoPlaying = false;

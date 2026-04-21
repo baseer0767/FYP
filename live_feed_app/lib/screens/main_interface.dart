@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:collection';           // Added for Queue
+import 'dart:collection'; // Added for Queue
 import 'dart:typed_data';
 import 'dart:io' show Platform;
 
@@ -32,16 +32,16 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
   final VoiceFeedback _voiceFeedback = VoiceFeedback();
   final http.Client _httpClient = http.Client();
 
-  final String _backendBaseUrl = "http://192.168.100.6:8000";
+  final String _backendBaseUrl = "http://10.200.254.199:8000";
 
   // ==================== NEW: Drop-Oldest Frame Queue ====================
   final Queue<Uint8List> _frameQueue = Queue<Uint8List>();
-  bool _isProcessing = false;                    // Replaced _isFramePipelineBusy
+  bool _isProcessing = false; // Replaced _isFramePipelineBusy
   Timer? _queueProcessorTimer;
 
   // Throttling
   DateTime? _lastProcessedTime;
-  final int throttleMilliseconds = 250;         // You can keep 250 or increase to 300
+  final int throttleMilliseconds = 250; // You can keep 250 or increase to 300
   Timer? _captureTimer;
 
   @override
@@ -161,22 +161,24 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
     if (!_isDetecting) return;
 
     // Convert to JPG asynchronously (non-blocking)
-    _convertCameraImageToJpg(cameraImage).then((jpgBytes) {
-      if (jpgBytes == null) return;
+    _convertCameraImageToJpg(cameraImage)
+        .then((jpgBytes) {
+          if (jpgBytes == null) return;
 
-      // Drop oldest frame if queue is full (prevents backlog)
-      if (_frameQueue.length >= 6) {
-        _frameQueue.removeFirst();
-      }
-      _frameQueue.addLast(jpgBytes);
+          // Drop oldest frame if queue is full (prevents backlog)
+          if (_frameQueue.length >= 6) {
+            _frameQueue.removeFirst();
+          }
+          _frameQueue.addLast(jpgBytes);
 
-      // Start processing if not busy
-      if (!_isProcessing) {
-        _processNextFrameFromQueue();
-      }
-    }).catchError((e) {
-      debugPrint("Frame conversion error: $e");
-    });
+          // Start processing if not busy
+          if (!_isProcessing) {
+            _processNextFrameFromQueue();
+          }
+        })
+        .catchError((e) {
+          debugPrint("Frame conversion error: $e");
+        });
   }
 
   // ==================== NEW: Queue Processor ====================
@@ -219,7 +221,8 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
 
     final now = DateTime.now();
     if (_lastProcessedTime != null &&
-        now.difference(_lastProcessedTime!).inMilliseconds < throttleMilliseconds) {
+        now.difference(_lastProcessedTime!).inMilliseconds <
+            throttleMilliseconds) {
       return;
     }
     _lastProcessedTime = now;
@@ -259,7 +262,7 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
 
       var response = await _httpClient
           .send(request)
-          .timeout(const Duration(seconds: 5));   // Slightly increased timeout
+          .timeout(const Duration(seconds: 5)); // Slightly increased timeout
 
       if (response.statusCode == 200) {
         var respStr = await response.stream.bytesToString();
@@ -350,7 +353,10 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
           final int vp = vBytes[uvIndex] - 128;
 
           int r = (yp + (1.402 * vp)).round().clamp(0, 255);
-          int g = (yp - (0.344136 * up) - (0.714136 * vp)).round().clamp(0, 255);
+          int g = (yp - (0.344136 * up) - (0.714136 * vp)).round().clamp(
+            0,
+            255,
+          );
           int b = (yp + (1.772 * up)).round().clamp(0, 255);
 
           convertedImage.setPixelRgba(x, y, r, g, b, 255);
