@@ -9,14 +9,14 @@ from pathlib import Path
 # PARAMETERS
 # ===============================
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-MODEL_PATH = PROJECT_ROOT / "models" / "deadlift_lstm_model.h5"
-SEQUENCE_LENGTH = 30
+MODEL_PATH = PROJECT_ROOT / "models" / "deadlift_lstm_model_1.h5"
+SEQUENCE_LENGTH = 10
 NUM_ANGLES = 9
 PRED_BUFFER = 5
 POSE_CONFIRM_FRAMES = 8
 
-#VIDEO_PATH = PROJECT_ROOT / "Deadlift" / "Incorrect" / "2.mov"
-VIDEO_PATH = None
+VIDEO_PATH = PROJECT_ROOT / "Deadlift" / "Correct" / "1.mov"
+#VIDEO_PATH = None
 
 # ===============================
 # LOAD MODEL

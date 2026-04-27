@@ -32,8 +32,7 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
   final VoiceFeedback _voiceFeedback = VoiceFeedback();
   final http.Client _httpClient = http.Client();
 
-  final String _backendBaseUrl = "http://172.16.106.34:8000";
-
+  final String _backendBaseUrl = "http://172.16.106.34:8000"; // Update with your backend IP and port
   // ==================== NEW: Drop-Oldest Frame Queue ====================
   final Queue<Uint8List> _frameQueue = Queue<Uint8List>();
   bool _isProcessing = false; // Replaced _isFramePipelineBusy
