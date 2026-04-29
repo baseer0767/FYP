@@ -33,7 +33,7 @@ class _VideoCheckerScreenState extends State<VideoCheckerScreen> {
   String _feedbackMessage = '';
 
   final VoiceFeedback _voiceFeedback = VoiceFeedback();
-  final String _backendBaseUrl = "http://172.16.106.34:8000";
+  final String _backendBaseUrl = "http://192.168.100.8:8000";
 
   Timer? _processingTimer;
   DateTime? _lastProcessedTime;

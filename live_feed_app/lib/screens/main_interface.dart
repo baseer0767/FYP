@@ -9,9 +9,18 @@ import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
 import 'dart:convert';
 import '../services/voice_feedback.dart';
+import '../theme/gym_theme.dart';
+import 'workout_hub_screen.dart';
 
 class MainInterfaceScreen extends StatefulWidget {
-  const MainInterfaceScreen({super.key});
+  const MainInterfaceScreen({
+    super.key,
+    this.initialExerciseLabel = 'Push-Ups',
+    this.initialExerciseApi = 'pushup',
+  });
+
+  final String initialExerciseLabel;
+  final String initialExerciseApi;
 
   @override
   State<MainInterfaceScreen> createState() => _MainInterfaceScreenState();
@@ -21,8 +30,8 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
   CameraController? _cameraController;
   bool _isDetecting = false;
   bool _isFrameInFlight = false;
-  String _currentExercise = 'Push-Ups';
-  String _currentExerciseApi = 'pushup';
+  late String _currentExercise;
+  late String _currentExerciseApi;
   String _feedbackMessage = '';
   String _predictionResult = '';
   DateTime? _lastVoiceTime;
@@ -32,7 +41,7 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
   final VoiceFeedback _voiceFeedback = VoiceFeedback();
   final http.Client _httpClient = http.Client();
 
-  final String _backendBaseUrl = "http://172.16.106.34:8000";
+  final String _backendBaseUrl = "http://192.168.44.65:8000";
 
   // ==================== NEW: Drop-Oldest Frame Queue ====================
   final Queue<Uint8List> _frameQueue = Queue<Uint8List>();
@@ -44,9 +53,52 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
   final int throttleMilliseconds = 250; // You can keep 250 or increase to 300
   Timer? _captureTimer;
 
+  void _goBackToHub() {
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (context) => const WorkoutHubScreen()),
+    );
+  }
+
+  Widget _glassPanel({required Widget child}) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(28),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.08),
+          border: Border.all(color: Colors.white.withOpacity(0.12)),
+          borderRadius: BorderRadius.circular(28),
+        ),
+        child: child,
+      ),
+    );
+  }
+
+  Widget _statusPill(String label, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withOpacity(0.34)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.2,
+        ),
+      ),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
+    _currentExercise = widget.initialExerciseLabel;
+    _currentExerciseApi = widget.initialExerciseApi;
     _initializeCamera();
   }
 
@@ -385,96 +437,93 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
   void _showExerciseSelector() {
     showModalBottomSheet(
       context: context,
-      backgroundColor: Colors.black.withOpacity(0.8),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
-      ),
+      backgroundColor: Colors.transparent,
       builder: (context) {
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 16),
-            const Text(
-              'Select Exercise',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: Colors.white,
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: _glassPanel(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(height: 16),
+                  Container(
+                    width: 52,
+                    height: 5,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.28),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Select exercise',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w900,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    alignment: WrapAlignment.center,
+                    children: [
+                      _statusPill('Push-Ups', GymColors.accentCool),
+                      _statusPill('Deadlift', GymColors.accentSoft),
+                      _statusPill('Plank', GymColors.accent),
+                      _statusPill('Bicep Curl', Colors.redAccent),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  ...[
+                    ('Push-Ups', 'pushup'),
+                    ('Deadlift', 'deadlift'),
+                    ('Plank', 'plank'),
+                    ('Bicep Curl', 'bicep'),
+                  ].map(
+                    (exercise) => Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      child: ListTile(
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                        tileColor: Colors.white.withOpacity(0.04),
+                        leading: const Icon(
+                          Icons.fitness_center_rounded,
+                          color: Colors.white,
+                        ),
+                        title: Text(
+                          exercise.$1,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        trailing: const Icon(
+                          Icons.arrow_forward_ios_rounded,
+                          color: Colors.white54,
+                          size: 16,
+                        ),
+                        onTap: () {
+                          setState(() {
+                            _currentExercise = exercise.$1;
+                            _currentExerciseApi = exercise.$2;
+                            _feedbackMessage = '';
+                            _predictionResult = '';
+                          });
+                          _resetExerciseBuffer();
+                          Navigator.pop(context);
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
               ),
             ),
-            const Divider(
-              color: Colors.white54,
-              thickness: 1,
-              indent: 16,
-              endIndent: 16,
-            ),
-            ListTile(
-              leading: const Icon(Icons.fitness_center, color: Colors.white),
-              title: const Text(
-                'Push-Ups',
-                style: TextStyle(color: Colors.white),
-              ),
-              onTap: () {
-                setState(() {
-                  _currentExercise = 'Push-Ups';
-                  _currentExerciseApi = 'pushup';
-                  _feedbackMessage = '';
-                  _predictionResult = '';
-                });
-                _resetExerciseBuffer();
-                Navigator.pop(context);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.fitness_center, color: Colors.white),
-              title: const Text(
-                'Deadlift',
-                style: TextStyle(color: Colors.white),
-              ),
-              onTap: () {
-                setState(() {
-                  _currentExercise = 'Deadlift';
-                  _currentExerciseApi = 'deadlift';
-                  _feedbackMessage = '';
-                  _predictionResult = '';
-                });
-                _resetExerciseBuffer();
-                Navigator.pop(context);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.fitness_center, color: Colors.white),
-              title: const Text('Plank', style: TextStyle(color: Colors.white)),
-              onTap: () {
-                setState(() {
-                  _currentExercise = 'Plank';
-                  _currentExerciseApi = 'plank';
-                  _feedbackMessage = '';
-                  _predictionResult = '';
-                });
-                _resetExerciseBuffer();
-                Navigator.pop(context);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.fitness_center, color: Colors.white),
-              title: const Text(
-                'Bicep Curl',
-                style: TextStyle(color: Colors.white),
-              ),
-              onTap: () {
-                setState(() {
-                  _currentExercise = 'Bicep Curl';
-                  _currentExerciseApi = 'bicep';
-                  _feedbackMessage = '';
-                  _predictionResult = '';
-                });
-                _resetExerciseBuffer();
-                Navigator.pop(context);
-              },
-            ),
-            const SizedBox(height: 16),
-          ],
+          ),
         );
       },
     );
@@ -485,168 +534,228 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
     return Scaffold(
       body: Stack(
         children: [
-          Container(
-            decoration: const BoxDecoration(
-              image: DecorationImage(
-                image: AssetImage('assets/background.png'),
-                fit: BoxFit.cover,
+          Positioned.fill(
+            child: Image.asset(
+              'assets/background.png',
+              fit: BoxFit.cover,
+              color: Colors.black.withOpacity(0.66),
+              colorBlendMode: BlendMode.darken,
+            ),
+          ),
+          Positioned.fill(
+            child: Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Color(0xF105070A),
+                    Color(0xDD0D1320),
+                    Color(0xF105070A),
+                  ],
+                ),
               ),
             ),
           ),
-          Column(
-            children: [
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(color: Colors.black.withOpacity(0.3)),
-                child: SafeArea(
-                  child: Column(
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text(
-                            'FitPose',
-                            style: TextStyle(
-                              fontSize: 28,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                              letterSpacing: 1.5,
-                            ),
-                          ),
-                          IconButton(
-                            onPressed: () {},
-                            icon: const Icon(
-                              Icons.settings,
-                              color: Colors.white,
-                              size: 28,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 8,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.2),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(
-                              Icons.fitness_center,
-                              color: Colors.white,
-                              size: 20,
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              _currentExercise,
-                              style: const TextStyle(
-                                fontSize: 18,
-                                color: Colors.white,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        _predictionResult,
-                        style: TextStyle(
-                          color: _predictionResult.contains("Correct")
-                              ? Colors.green
-                              : (_predictionResult.contains("Incorrect")
-                                    ? Colors.red
-                                    : Colors.yellow),
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        child: Text(
-                          _feedbackMessage,
-                          style: const TextStyle(
-                            fontSize: 16,
-                            color: Colors.white,
-                            fontWeight: FontWeight.w600,
-                            height: 1.4,
-                          ),
-                          textAlign: TextAlign.center,
-                          maxLines: 4,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      ElevatedButton.icon(
-                        onPressed: _toggleDetection,
-                        icon: Icon(
-                          _isDetecting ? Icons.stop : Icons.play_arrow,
-                          color: Colors.indigo,
-                        ),
-                        label: Text(
-                          _isDetecting ? 'Stop' : 'Start',
-                          style: const TextStyle(
-                            color: Colors.indigo,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 32,
-                            vertical: 14,
-                          ),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(30),
-                          ),
-                        ),
-                      ),
+          Positioned.fill(
+            child: IgnorePointer(
+              child: Container(
+                decoration: BoxDecoration(
+                  gradient: RadialGradient(
+                    center: const Alignment(-1.0, -1.0),
+                    radius: 1.2,
+                    colors: [
+                      GymColors.accent.withOpacity(0.18),
+                      Colors.transparent,
                     ],
                   ),
                 ),
               ),
-              Expanded(
-                child: _cameraController?.value.isInitialized == true
-                    ? CameraPreview(_cameraController!)
-                    : const Center(
-                        child: CircularProgressIndicator(color: Colors.indigo),
+            ),
+          ),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              child: Column(
+                children: [
+                  _glassPanel(
+                    child: Padding(
+                      padding: const EdgeInsets.all(18),
+                      child: Column(
+                        children: [
+                          Row(
+                            children: [
+                              IconButton(
+                                onPressed: _goBackToHub,
+                                icon: const Icon(
+                                  Icons.arrow_back_rounded,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              const Expanded(
+                                child: Text(
+                                  'FitPose',
+                                  style: TextStyle(
+                                    fontSize: 28,
+                                    fontWeight: FontWeight.w900,
+                                    color: Colors.white,
+                                    letterSpacing: 1.0,
+                                  ),
+                                ),
+                              ),
+                              IconButton(
+                                onPressed: _showExerciseSelector,
+                                icon: const Icon(
+                                  Icons.list_rounded,
+                                  color: Colors.white,
+                                ),
+                                tooltip: 'Select Exercise',
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          Wrap(
+                            spacing: 10,
+                            runSpacing: 10,
+                            alignment: WrapAlignment.center,
+                            children: [
+                              _statusPill(_currentExercise, GymColors.accent),
+                              _statusPill(
+                                _isDetecting
+                                    ? 'Live training'
+                                    : 'Ready to start',
+                                _isDetecting
+                                    ? GymColors.accentSoft
+                                    : GymColors.accentCool,
+                              ),
+                              _statusPill('Theme locked', GymColors.accent),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            _predictionResult,
+                            style: TextStyle(
+                              color: _predictionResult.contains('Correct')
+                                  ? Colors.greenAccent
+                                  : (_predictionResult.contains('Incorrect')
+                                        ? Colors.redAccent
+                                        : Colors.white.withOpacity(0.82)),
+                              fontSize: 18,
+                              fontWeight: FontWeight.w800,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            _feedbackMessage.isEmpty
+                                ? 'Press start when you are ready to train.'
+                                : _feedbackMessage,
+                            style: TextStyle(
+                              fontSize: 15,
+                              color: Colors.white.withOpacity(0.78),
+                              fontWeight: FontWeight.w600,
+                              height: 1.4,
+                            ),
+                            textAlign: TextAlign.center,
+                            maxLines: 3,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 14),
+                          SizedBox(
+                            height: 54,
+                            child: ElevatedButton.icon(
+                              onPressed: _toggleDetection,
+                              icon: Icon(
+                                _isDetecting
+                                    ? Icons.stop_rounded
+                                    : Icons.play_arrow_rounded,
+                                color: Colors.black,
+                              ),
+                              label: Text(
+                                _isDetecting
+                                    ? 'Stop Training'
+                                    : 'Start Training',
+                                style: const TextStyle(
+                                  color: Colors.black,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: GymColors.accent,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 28,
+                                  vertical: 14,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(18),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
-              ),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(color: Colors.black.withOpacity(0.3)),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    IconButton(
-                      onPressed: _showExerciseSelector,
-                      icon: const Icon(
-                        Icons.list,
-                        color: Colors.white,
-                        size: 30,
-                      ),
-                      tooltip: 'Select Exercise',
                     ),
-                    IconButton(
-                      onPressed: () {},
-                      icon: const Icon(
-                        Icons.history,
-                        color: Colors.white,
-                        size: 30,
+                  ),
+                  const SizedBox(height: 14),
+                  Expanded(
+                    child: _glassPanel(
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(22),
+                          child: _cameraController?.value.isInitialized == true
+                              ? CameraPreview(_cameraController!)
+                              : const Center(
+                                  child: CircularProgressIndicator(
+                                    color: GymColors.accent,
+                                  ),
+                                ),
+                        ),
                       ),
-                      tooltip: 'Workout History',
                     ),
-                  ],
-                ),
+                  ),
+                  const SizedBox(height: 14),
+                  _glassPanel(
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          IconButton(
+                            onPressed: _showExerciseSelector,
+                            icon: const Icon(
+                              Icons.list_rounded,
+                              color: Colors.white,
+                              size: 30,
+                            ),
+                            tooltip: 'Select Exercise',
+                          ),
+                          IconButton(
+                            onPressed: () {},
+                            icon: const Icon(
+                              Icons.history_rounded,
+                              color: Colors.white,
+                              size: 30,
+                            ),
+                            tooltip: 'Workout History',
+                          ),
+                          IconButton(
+                            onPressed: _goBackToHub,
+                            icon: const Icon(
+                              Icons.home_rounded,
+                              color: Colors.white,
+                              size: 30,
+                            ),
+                            tooltip: 'Back to hub',
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
         ],
       ),
