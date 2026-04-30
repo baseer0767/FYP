@@ -7,9 +7,9 @@ import os
 # ===============================
 # PARAMETERS
 # ===============================
-VIDEO_DIR = "D:/FIT_pose App/FYP_Fitpose/Deadlift/Incorrect"   # change folder for each class
-LABEL = "incorrect"                      # correct / incorrect
-SEQUENCE_LENGTH = 30
+VIDEO_DIR = "D:/FIT_pose App/FYP_Fitpose/Deadlift/Correct"   # change folder for each class
+LABEL = "correct"                      # correct / incorrect
+SEQUENCE_LENGTH = 20
 STRIDE = SEQUENCE_LENGTH // 2             # 50% overlap
 CSV_OUTPUT = "deadlift_sequences_raw.csv"
 

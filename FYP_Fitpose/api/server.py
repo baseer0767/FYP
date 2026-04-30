@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import cv2
+import joblib
 import mediapipe as mp
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
@@ -20,12 +21,13 @@ MODELS_DIR = BASE_DIR / "models"
 
 MODEL_FILES = {
     "pushup": "pushup_lstm_10f_stride_5.h5",
-    "deadlift": "deadlift_lstm_model_1.h5",
+    "deadlift": "deadlift_lstm_model_20f_v2.h5",
     "plank": "plank_model.pkl",
     "bicep": "bicep_curl_model.pkl",
 }
 
 SCALER_FILES = {
+    "deadlift": "deadlift_scaler.save",
     "plank": "plank_input_scaler.pkl",
     "bicep": "bicep_curl_input_scaler.pkl",
 }
@@ -61,14 +63,12 @@ PUSHUP_POSE_CONFIRM_FRAMES = 4
 PUSHUP_THRESHOLD = 0.7
 PUSHUP_BIAS = 0.12
 
-DEADLIFT_SEQUENCE_LENGTH = 10
+DEADLIFT_SEQUENCE_LENGTH = 20
 DEADLIFT_PRED_BUFFER = 4
-DEADLIFT_POSE_CONFIRM_FRAMES = 2
+DEADLIFT_POSE_CONFIRM_FRAMES = 3
+DEADLIFT_MOVEMENT_THRESHOLD = 0.2
+DEADLIFT_PRED_THRESHOLD = 0.50
 DEADLIFT_MIN_SEQUENCE_FOR_PRED = 5
-DEADLIFT_THRESHOLD = 0.7
-DEADLIFT_BIAS = 0.12
-DEADLIFT_CORRECT_MARGIN = 0.06
-DEADLIFT_MIN_MOTION_SCORE = 0.9
 DEADLIFT_IDLE_HIP_ANGLE_MIN = 170
 DEADLIFT_IDLE_KNEE_ANGLE_MIN = 168
 DEADLIFT_IDLE_HINGE_OFFSET_MAX = 0.04
@@ -149,13 +149,19 @@ def load_exercise_models() -> Dict[str, ModelConfig]:
         if model_path.suffix.lower() == ".h5":
             loaded_model = load_model(str(model_path))
             input_shape = get_model_input_shape(loaded_model)
+            scaler = None
 
             if exercise == "pushup":
                 seq_len = PUSHUP_SEQUENCE_LENGTH
                 feat_dim = int(input_shape[2]) if input_shape and input_shape[2] else 8
             elif exercise == "deadlift":
-                seq_len = int(input_shape[1]) if input_shape and input_shape[1] else DEADLIFT_SEQUENCE_LENGTH
-                feat_dim = int(input_shape[2]) if input_shape and input_shape[2] else 9
+                seq_len = DEADLIFT_SEQUENCE_LENGTH
+                feat_dim = 15
+                scaler_path = MODELS_DIR / SCALER_FILES.get("deadlift", "")
+                if scaler_path.exists():
+                    scaler = joblib.load(str(scaler_path))
+                else:
+                    print(f"Warning: deadlift scaler not found at {scaler_path}")
             else:
                 seq_len = int(input_shape[1]) if input_shape and input_shape[1] else 30
                 feat_dim = int(input_shape[2]) if input_shape and input_shape[2] else 8
@@ -165,6 +171,7 @@ def load_exercise_models() -> Dict[str, ModelConfig]:
                 kind="lstm",
                 sequence_length=seq_len,
                 feature_dim=feat_dim,
+                scaler=scaler,
             )
             print(
                 f"Model loaded for {exercise}: {model_path} "
@@ -248,28 +255,94 @@ def extract_angles(landmarks):
     )
 
 
-def extract_deadlift_features(landmarks):
-    l = normalize_landmarks(landmarks)
-    angles = np.array(
+def extract_deadlift_features(landmarks, prev_vals):
+    frame = normalize_landmarks(landmarks)
+
+    l_hip = calculate_angle(frame[11], frame[23], frame[25])
+    r_hip = calculate_angle(frame[12], frame[24], frame[26])
+    l_knee = calculate_angle(frame[23], frame[25], frame[27])
+    r_knee = calculate_angle(frame[24], frame[26], frame[28])
+    l_torso = calculate_angle(frame[7], frame[11], frame[23])
+    r_torso = calculate_angle(frame[8], frame[12], frame[24])
+
+    hip_y = (frame[23][1] + frame[24][1]) / 2
+    shoulder_y = (frame[11][1] + frame[12][1]) / 2
+
+    if prev_vals is None:
+        hip_v = shoulder_v = 0.0
+    else:
+        hip_v = hip_y - prev_vals[0]
+        shoulder_v = shoulder_y - prev_vals[1]
+
+    hip_sym = abs(l_hip - r_hip)
+    knee_sym = abs(l_knee - r_knee)
+    hand_x = (frame[15][0] + frame[16][0]) / 2
+    hip_x = (frame[23][0] + frame[24][0]) / 2
+    bar_offset = abs(hand_x - hip_x)
+
+    mid_shoulder = (frame[11] + frame[12]) / 2
+    mid_hip = (frame[23] + frame[24]) / 2
+    mid_knee = (frame[25] + frame[26]) / 2
+    spine_angle = calculate_angle(mid_shoulder, mid_hip, mid_knee)
+
+    features = np.array(
         [
-            calculate_angle(l[11], l[23], l[25]),
-            calculate_angle(l[12], l[24], l[26]),
-            calculate_angle(l[23], l[25], l[27]),
-            calculate_angle(l[24], l[26], l[28]),
-            calculate_angle(l[7], l[11], l[23]),
-            calculate_angle(l[8], l[12], l[24]),
-            calculate_angle(l[13], l[11], l[23]),
-            calculate_angle(l[14], l[12], l[24]),
+            l_hip,
+            r_hip,
+            l_knee,
+            r_knee,
+            l_torso,
+            r_torso,
+            hip_y,
+            hip_v,
+            shoulder_v,
+            hip_sym,
+            knee_sym,
+            bar_offset,
+            spine_angle,
+            abs(l_torso - r_torso),
+            abs(l_hip - r_hip),
         ],
         dtype=np.float32,
     )
-    hip_height = np.array([(l[23][1] + l[24][1]) / 2], dtype=np.float32)
-    return np.concatenate([angles, hip_height], axis=0)
+
+    return features, (hip_y, shoulder_y)
+
+
+def calculate_movement(curr, prev):
+    if prev is None:
+        return 0.0
+    return float(np.mean(np.abs(curr - prev)))
+
+
+def is_good_deadlift_form(features):
+    spine_angle = features[12]
+    bar_offset = features[11]
+    hip_angle = np.mean([features[0], features[1]])
+    knee_angle = np.mean([features[2], features[3]])
+
+    issues = []
+
+    if spine_angle < 70:
+        issues.append("Back rounding")
+
+    if knee_angle < 85:
+        issues.append("Too much knee bend")
+
+    if hip_angle > 200:
+        issues.append("Hips too high")
+
+    if bar_offset > 0.16:
+        issues.append("Bar too far from body")
+
+    is_good = len(issues) == 0
+    feedback = " | ".join(issues[:2]) if issues else "Good form"
+    return is_good, feedback
 
 
 def extract_base_features(exercise: str, landmarks):
     if exercise == "deadlift":
-        return extract_deadlift_features(landmarks)
+        raise ValueError("Use extract_deadlift_features with deadlift runtime state")
     return extract_angles(landmarks)
 
 
@@ -605,6 +678,18 @@ class SequenceState:
         self.pose_counter = 0
 
 
+class DeadliftState(SequenceState):
+    def __init__(self, sequence_length: int, pred_buffer_size: int = DEADLIFT_PRED_BUFFER):
+        super().__init__(sequence_length, pred_buffer_size)
+        self.prev_features = None
+        self.prev_vals = None
+
+    def clear(self):
+        super().clear()
+        self.prev_features = None
+        self.prev_vals = None
+
+
 class BicepArmState:
     def __init__(self):
         self.stage = "down"
@@ -634,7 +719,7 @@ for name, cfg in models.items():
     if name == "pushup":
         exercise_states[name] = SequenceState(PUSHUP_SEQUENCE_LENGTH, PUSHUP_PRED_BUFFER)
     elif name == "deadlift":
-        exercise_states[name] = SequenceState(cfg.sequence_length, DEADLIFT_PRED_BUFFER)
+        exercise_states[name] = DeadliftState(cfg.sequence_length, DEADLIFT_PRED_BUFFER)
     else:
         exercise_states[name] = SequenceState(cfg.sequence_length)
 
@@ -709,117 +794,98 @@ async def predict_frame(
     if results.pose_landmarks:
         landmarks = np.array([[lm.x, lm.y, lm.z] for lm in results.pose_landmarks.landmark])
 
-        if normalized_exercise in ("pushup", "deadlift"):
+        if normalized_exercise == "pushup":
             state = exercise_states[normalized_exercise]
-
-            pose_ok = is_pose_valid(normalized_exercise, landmarks)
+            pose_ok = is_pushup_pose(landmarks)
 
             if pose_ok:
                 state.pose_counter += 1
             else:
                 state.pose_counter = max(0, state.pose_counter - 1)
-                if normalized_exercise == "deadlift" and state.pose_counter == 0:
-                    state.sequence.clear()
-                    state.pred_buffer.clear()
 
-            if normalized_exercise == "pushup":
-                required_pose_frames = PUSHUP_POSE_CONFIRM_FRAMES
-            else:
-                required_pose_frames = DEADLIFT_POSE_CONFIRM_FRAMES
-
-            if state.pose_counter >= required_pose_frames:
-                features = extract_base_features(normalized_exercise, landmarks)
+            if state.pose_counter >= PUSHUP_POSE_CONFIRM_FRAMES:
+                features = extract_angles(landmarks)
                 features = match_feature_dim(features, model_config.feature_dim)
                 state.sequence.append(features)
 
-                deadlift_can_predict_early = (
-                    normalized_exercise == "deadlift"
-                    and len(state.sequence) >= DEADLIFT_MIN_SEQUENCE_FOR_PRED
-                )
+                if len(state.sequence) == state.sequence_length:
+                    seq = np.array(state.sequence, dtype=np.float32).reshape(
+                        1, state.sequence_length, model_config.feature_dim
+                    )
+                    pred_raw = model.predict(seq, verbose=0, batch_size=1)
+                    pred_incorrect = parse_prediction_probability(pred_raw)
+                    pred_incorrect = float(np.clip(pred_incorrect, 0.0, 1.0))
 
-                if len(state.sequence) == state.sequence_length or deadlift_can_predict_early:
-                    if normalized_exercise == "pushup":
-                        seq = np.array(state.sequence, dtype=np.float32).reshape(
-                            1, state.sequence_length, model_config.feature_dim
-                        )
-                        pred_raw = model.predict(seq, verbose=0, batch_size=1)
-                        pred_incorrect = parse_prediction_probability(pred_raw)
-                        pred_incorrect = float(np.clip(pred_incorrect, 0.0, 1.0))
+                    state.pred_buffer.append(pred_incorrect)
+                    smooth_pred = float(np.mean(state.pred_buffer))
+                    current_angles = state.sequence[-1]
 
-                        state.pred_buffer.append(pred_incorrect)
-                        smooth_pred = float(np.mean(state.pred_buffer))
-                        current_angles = state.sequence[-1]
-
-                        adjusted_pred = max(0.0, smooth_pred - PUSHUP_BIAS)
-                        if adjusted_pred < PUSHUP_THRESHOLD:
-                            label = "Correct"
-                            confidence = 1 - adjusted_pred
-                            feedback = "Perfect form! Keep it up!"
-                        else:
-                            label = "Incorrect"
-                            confidence = adjusted_pred
-                            feedback = get_posture_feedback(normalized_exercise, current_angles, landmarks)
+                    adjusted_pred = max(0.0, smooth_pred - PUSHUP_BIAS)
+                    if adjusted_pred < PUSHUP_THRESHOLD:
+                        label = "Correct"
+                        confidence = 1 - adjusted_pred
+                        feedback = "Perfect form! Keep it up!"
                     else:
-                        motion_score = deadlift_motion_score(state.sequence)
-                        if motion_score < DEADLIFT_MIN_MOTION_SCORE:
-                            label = "Get into deadlift position"
-                            confidence = 0.0
-                            feedback = "Start deadlift movement. Standing still cannot be scored."
-                            state.pred_buffer.clear()
-                        else:
-                            seq_frames = np.array(state.sequence, dtype=np.float32)
-                            if seq_frames.shape[0] < state.sequence_length:
-                                pad_count = state.sequence_length - seq_frames.shape[0]
-                                pad_frames = np.repeat(seq_frames[-1:, :], pad_count, axis=0)
-                                seq_frames = np.concatenate([seq_frames, pad_frames], axis=0)
-
-                            seq = seq_frames.reshape(
-                                1, state.sequence_length, model_config.feature_dim
-                            )
-                            pred_raw = model.predict(seq, verbose=0, batch_size=1)
-                            pred_incorrect = parse_prediction_probability(pred_raw)
-                            pred_incorrect = float(np.clip(pred_incorrect, 0.0, 1.0))
-
-                            state.pred_buffer.append(pred_incorrect)
-                            smooth_pred = float(np.mean(state.pred_buffer))
-                            current_angles = state.sequence[-1]
-                            form_issues = deadlift_form_issues(current_angles, landmarks)
-
-                            adjusted_pred = min(1.0, smooth_pred + DEADLIFT_BIAS)
-                            deadlift_correct_cutoff = max(0.0, DEADLIFT_THRESHOLD - DEADLIFT_CORRECT_MARGIN)
-
-                            if form_issues:
-                                label = "Incorrect"
-                                confidence = max(adjusted_pred, DEADLIFT_THRESHOLD)
-                                feedback = " | ".join(form_issues[:2])
-                            elif len(state.sequence) < state.sequence_length:
-                                label = "Analyzing..."
-                                confidence = float(max(0.0, min(1.0, (1 - adjusted_pred) * 0.7)))
-                                feedback = (
-                                    f"Stabilizing sequence ({len(state.sequence)}/{state.sequence_length}). "
-                                    "Keep the same form for confirmation."
-                                )
-                            elif adjusted_pred < deadlift_correct_cutoff:
-                                label = "Correct"
-                                confidence = 1 - adjusted_pred
-                                feedback = "Perfect form! Keep it up!"
-                            elif adjusted_pred < DEADLIFT_THRESHOLD:
-                                label = "Analyzing..."
-                                confidence = float(max(0.0, min(1.0, (1 - adjusted_pred) * 0.8)))
-                                feedback = "Keep form consistent for confirmation."
-                            else:
-                                label = "Incorrect"
-                                confidence = adjusted_pred
-                                feedback = get_posture_feedback(normalized_exercise, current_angles, landmarks)
+                        label = "Incorrect"
+                        confidence = adjusted_pred
+                        feedback = get_posture_feedback(normalized_exercise, current_angles, landmarks)
                 else:
                     label = "Analyzing..."
                     feedback = f"Collecting sequence ({len(state.sequence)}/{state.sequence_length})"
             else:
-                label = f"Get into {normalized_exercise} position"
-                if normalized_exercise == "deadlift":
-                    feedback = "Stand sideways and start a hip-hinge movement with full body visible."
+                label = "Get into pushup position"
+                feedback = "Align your body so the full pose is visible."
+
+        elif normalized_exercise == "deadlift":
+            state = exercise_states[normalized_exercise]
+            features, state.prev_vals = extract_deadlift_features(landmarks, state.prev_vals)
+            movement = calculate_movement(features, state.prev_features)
+            state.prev_features = features.copy()
+
+            if movement > DEADLIFT_MOVEMENT_THRESHOLD:
+                state.pose_counter += 1
+            else:
+                state.pose_counter = max(0, state.pose_counter - 1)
+
+            if (
+                state.pose_counter >= DEADLIFT_POSE_CONFIRM_FRAMES
+                and len(state.sequence) < state.sequence_length
+            ):
+                state.sequence.append(features)
+
+            deadlift_can_predict = len(state.sequence) >= DEADLIFT_MIN_SEQUENCE_FOR_PRED and movement > DEADLIFT_MOVEMENT_THRESHOLD
+
+            if deadlift_can_predict:
+                seq_array = np.array(state.sequence, dtype=np.float32)
+                if seq_array.shape[0] < state.sequence_length:
+                    pad_count = state.sequence_length - seq_array.shape[0]
+                    pad_frames = np.repeat(seq_array[-1:, :], pad_count, axis=0)
+                    seq_array = np.concatenate([seq_array, pad_frames], axis=0)
+
+                if model_config.scaler is not None:
+                    seq_scaled = model_config.scaler.transform(seq_array)
                 else:
-                    feedback = "Align your body so the full pose is visible."
+                    seq_scaled = seq_array
+
+                seq_scaled = seq_scaled.reshape(1, state.sequence_length, model_config.feature_dim)
+                pred = float(model.predict(seq_scaled, verbose=0)[0][0])
+                pred = float(np.clip(pred, 0.0, 1.0))
+                confidence = float(1.0 - pred)
+
+                form_ok, rule_feedback = is_good_deadlift_form(features)
+                if pred < DEADLIFT_PRED_THRESHOLD and form_ok:
+                    label = "Correct"
+                    feedback = "Excellent form - keep going!"
+                else:
+                    label = "Incorrect"
+                    feedback = rule_feedback if rule_feedback != "Good form" else "Form needs improvement"
+            else:
+                if state.pose_counter >= DEADLIFT_POSE_CONFIRM_FRAMES:
+                    label = "Analyzing..."
+                    feedback = f"Collecting sequence ({len(state.sequence)}/{DEADLIFT_MIN_SEQUENCE_FOR_PRED})"
+                else:
+                    label = "Get into deadlift position"
+                    feedback = "Side view | Start lifting"
 
         elif normalized_exercise == "plank":
             label, confidence, feedback = predict_plank(model_config, results.pose_landmarks.landmark)
