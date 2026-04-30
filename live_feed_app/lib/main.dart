@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:supabase_flutter/supabase_flutter.dart'; // ✅ ADD THIS
 import 'screens/home_screen.dart';
+import 'theme/gym_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized(); // ✅ REQUIRED
@@ -23,9 +24,9 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'FitPose',
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-      ),
+      theme: GymTheme.dark(),
+      darkTheme: GymTheme.dark(),
+      themeMode: ThemeMode.dark,
       home: const HomeScreen(), // ✅ KEEP THIS
     );
   }

@@ -37,7 +37,7 @@ dependencies:
   provider: ^6.0.5
   image: ^4.0.15
   image_picker: ^1.0.7
-  flutter_tts: ^3.8.5
+  flutter_tts: ^4.2.3  
   media_kit: ^1.1.10         # Main package
   media_kit_video: ^1.2.4    # Video playback widget
   media_kit_libs_android_video: ^1.0.4  # Optional: better Android performance
