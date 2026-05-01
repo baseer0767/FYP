@@ -2,7 +2,7 @@ fastapi
 uvicorn
 numpy
 pandas
-opencv-python-headless==4.13.0.92
+opencv-contrib-python==4.13.0.92
 tensorflow==2.19.1
 protobuf==4.25.4
 python-multipart
