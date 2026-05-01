@@ -49,7 +49,7 @@ EXERCISE_ALIASES = {
 PRED_BUFFER = 5
 POSE_CONFIRM_FRAMES = 3
 PLANK_CONFIDENCE_THRESHOLD = 0.6
-BICEP_CONFIDENCE_THRESHOLD = 0.95
+BICEP_CONFIDENCE_THRESHOLD = 0.90
 BICEP_VISIBILITY_THRESHOLD = 0.65
 BICEP_STAGE_UP_THRESHOLD = 100
 BICEP_STAGE_DOWN_THRESHOLD = 120
@@ -62,6 +62,9 @@ PUSHUP_PRED_BUFFER = 8
 PUSHUP_POSE_CONFIRM_FRAMES = 4
 PUSHUP_THRESHOLD = 0.7
 PUSHUP_BIAS = 0.12
+
+PLANK_POSE_CONFIRM_FRAMES = 4
+BICEP_POSE_CONFIRM_FRAMES = 2
 
 DEADLIFT_SEQUENCE_LENGTH = 20
 DEADLIFT_PRED_BUFFER = 4
@@ -373,9 +376,9 @@ def predict_plank(model_config: ModelConfig, landmarks):
     if predicted_class == "C" and confidence >= PLANK_CONFIDENCE_THRESHOLD:
         return "Correct", confidence, "Good form! Hold steady."
     if predicted_class == "L" and confidence >= PLANK_CONFIDENCE_THRESHOLD:
-        return "Incorrect", confidence, "Low back detected. Drop your hips down."
+        return "Incorrect", confidence, "Low back detected. Raise your hips."
     if predicted_class == "H" and confidence >= PLANK_CONFIDENCE_THRESHOLD:
-        return "Incorrect", confidence, "High back detected. Raise your hips up."
+        return "Incorrect", confidence, "High back detected. Drop your hips down."
 
     return "Analyzing...", confidence, "Hold position while the model stabilizes."
 
@@ -625,6 +628,51 @@ def deadlift_motion_score(sequence: deque) -> float:
 
     seq_arr = np.array(sequence, dtype=np.float32)
     return float(np.mean(np.abs(np.diff(seq_arr, axis=0))))
+
+
+def is_bicep_start_pose(landmarks):
+    nose = landmarks[0]
+    l_shoulder = landmarks[11]
+    r_shoulder = landmarks[12]
+    l_hip = landmarks[23]
+    r_hip = landmarks[24]
+
+    shoulder_y = (l_shoulder[1] + r_shoulder[1]) / 2
+    hip_y = (l_hip[1] + r_hip[1]) / 2
+    hip_x = (l_hip[0] + r_hip[0]) / 2
+
+    # Require visible upper body framing (head to hip) and avoid edge/cropped detections.
+    if not (0.02 < nose[1] < 0.65):
+        return False
+    if not (0.20 < hip_y < 0.95):
+        return False
+    if not (0.05 < nose[0] < 0.95 and 0.05 < hip_x < 0.95):
+        return False
+
+    # Basic standing posture check (shoulders above hips with some torso length).
+    if shoulder_y >= hip_y:
+        return False
+    if (hip_y - shoulder_y) < 0.10:
+        return False
+
+    left_elbow = calculate_angle(landmarks[11], landmarks[13], landmarks[15])
+    right_elbow = calculate_angle(landmarks[12], landmarks[14], landmarks[16])
+    return 35 < left_elbow < 175 and 35 < right_elbow < 175
+
+
+def is_plank_start_pose(landmarks):
+    shoulder_y = (landmarks[11][1] + landmarks[12][1]) / 2
+    hip_y = (landmarks[23][1] + landmarks[24][1]) / 2
+    ankle_y = (landmarks[27][1] + landmarks[28][1]) / 2
+
+    # Straight body line from shoulder to ankle for basic plank setup.
+    body_slope = abs(shoulder_y - hip_y) + abs(hip_y - ankle_y)
+    if body_slope > 0.35:
+        return False
+
+    left_elbow = calculate_angle(landmarks[11], landmarks[13], landmarks[15])
+    right_elbow = calculate_angle(landmarks[12], landmarks[14], landmarks[16])
+    return 30 < left_elbow < 190 and 30 < right_elbow < 190
 
 
 def is_pose_valid(exercise: str, landmarks):
@@ -888,14 +936,38 @@ async def predict_frame(
                     feedback = "Side view | Start lifting"
 
         elif normalized_exercise == "plank":
-            label, confidence, feedback = predict_plank(model_config, results.pose_landmarks.landmark)
+            state = exercise_states[normalized_exercise]
+            pose_ok = is_plank_start_pose(landmarks)
+
+            if pose_ok:
+                state.pose_counter += 1
+            else:
+                state.pose_counter = max(0, state.pose_counter - 1)
+
+            if state.pose_counter >= PLANK_POSE_CONFIRM_FRAMES:
+                label, confidence, feedback = predict_plank(model_config, results.pose_landmarks.landmark)
+            else:
+                label = "Get into plank position"
+                feedback = "Hold a stable plank posture to start detection."
 
         elif normalized_exercise == "bicep":
-            label, confidence, feedback = predict_bicep(
-                model_config,
-                results.pose_landmarks.landmark,
-                bicep_runtime_state,
-            )
+            state = exercise_states[normalized_exercise]
+            pose_ok = is_bicep_start_pose(landmarks)
+
+            if pose_ok:
+                state.pose_counter += 1
+            else:
+                state.pose_counter = max(0, state.pose_counter - 1)
+
+            if state.pose_counter >= BICEP_POSE_CONFIRM_FRAMES:
+                label, confidence, feedback = predict_bicep(
+                    model_config,
+                    results.pose_landmarks.landmark,
+                    bicep_runtime_state,
+                )
+            else:
+                label = "Get into bicep position"
+                feedback = "Keep head-to-hip visible in frame before detection starts."
 
         else:
             label = "Unsupported exercise"

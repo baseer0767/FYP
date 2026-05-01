@@ -41,7 +41,7 @@ class _MainInterfaceScreenState extends State<MainInterfaceScreen> {
   final VoiceFeedback _voiceFeedback = VoiceFeedback();
   final http.Client _httpClient = http.Client();
 
-  final String _backendBaseUrl = "https://fyp-918x.onrender.com";
+  final String _backendBaseUrl = "http://192.168.100.6:8000"; // Update with your backend URL
 
   // ==================== NEW: Drop-Oldest Frame Queue ====================
   final Queue<Uint8List> _frameQueue = Queue<Uint8List>();
